@@ -239,18 +239,14 @@ async def handle_backfill_cmd(chat_id: int, status_msg_id: int):
     posted_count = 0
     for idx, file in enumerate(to_post):
         rel_path = f"raw/{file}"
-        abs_path = os.path.join(raw_dir, file)
-        
-        # Extract TL;DR
-        tldr = extract_tldr_from_file(abs_path)
-        
+
         logger.info(f"Backfilling {file} ({idx+1}/{total})...")
         success = False
-        
+
         # Throttling and retry logic
         retries = 1
         while retries >= 0:
-            success = archive_post(rel_path, tldr, BOT_TOKEN, ARCHIVE_CHANNEL_ID, VAULT_DIR)
+            success = archive_post(rel_path, BOT_TOKEN, ARCHIVE_CHANNEL_ID, VAULT_DIR)
             if success:
                 posted_count += 1
                 break
@@ -751,10 +747,11 @@ async def process_task(task: dict):
                 # Фолбэк: если выжимку не удалось подготовить — отправляем файл
                 send_document(chat_id, BOT_TOKEN, doc_abs_path, caption=f"📄 {os.path.basename(result_val)}")
 
-            # 2. Архивный канал: файл + TL;DR чистым текстом (без разметки)
+            # 2. Архивный канал: rich-пост с выжимкой и хэштегами (файлы .md
+            #    боты Telegram отдают с кривым MIME — читать их в TG нельзя)
             if ARCHIVE_CHANNEL_ID:
                 try:
-                    archive_post(result_val, strip_markdown(summary_val), BOT_TOKEN, ARCHIVE_CHANNEL_ID, VAULT_DIR)
+                    archive_post(result_val, BOT_TOKEN, ARCHIVE_CHANNEL_ID, VAULT_DIR)
                 except Exception as ae:
                     logger.error(f"Error posting to archive channel: {ae}")
 
