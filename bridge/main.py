@@ -688,16 +688,35 @@ async def process_task(task: dict):
             return
 
         # Parse markers from final text.
-        # ВАЖНО: разрешаем пробелы перед маркерами, так как ИИ может сдвинуть их.
-        res_matches = re.findall(r'^\s*RESULT:\s*(\S+)', full_output, re.MULTILINE)
-        sum_matches = re.findall(r'^\s*SUMMARY:\s*(.+)$', full_output, re.MULTILINE)
+        # ВАЖНО: терпимы к оформлению — агент может обернуть маркер в **жирный**,
+        # `код`, цитату или сдвинуть пробелами.
+        marker_res = r'^[\s>*_`#-]*RESULT[\s*_`]*:[\s*_`]*(\S+)'
+        marker_sum = r'^[\s>*_`#-]*SUMMARY[\s*_`]*:\s*(.+)$'
+        res_matches = [m.strip('`*_') for m in re.findall(marker_res, full_output, re.MULTILINE)]
+        sum_matches = [m.strip('`*_ ') for m in re.findall(marker_sum, full_output, re.MULTILINE)]
 
         result_val = res_matches[-1] if res_matches else "NONE"
         summary_val = sum_matches[-1] if sum_matches else full_output[:300] + "..."
 
+        if not res_matches:
+            # Диагностика: маркер не найден — сохраняем хвост ответа агента в лог
+            logger.warning(f"RESULT marker not found. Agent output tail: {full_output[-600:]!r}")
+
+        # Нормализация пути: агент может добавить префикс ./ или vault/
+        if result_val != "NONE":
+            result_val = re.sub(r'^(\./)+|^vault/', '', result_val)
+            if not os.path.exists(os.path.join(VAULT_DIR, result_val)):
+                logger.warning(f"RESULT file does not exist: {result_val}")
+                result_val = "NONE"
+
         if result_val == "NONE":
             # Sitemap confirmation or error
-            await edit_status_message(chat_id, status_msg_id, f"ℹ️ <b>Уведомление агента:</b>\n\n{summary_val}")
+            await send_tg_api("editMessageText", {
+                "chat_id": chat_id,
+                "message_id": status_msg_id,
+                "text": f"ℹ️ <b>Уведомление агента:</b>\n\n{escape_html(summary_val)}",
+                "parse_mode": "HTML"
+            })
             # If sitemap confirmation, save to map
             if captured_session_id:
                 reply_session_map[status_msg_id] = captured_session_id
