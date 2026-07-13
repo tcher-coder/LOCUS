@@ -43,35 +43,39 @@ def strip_markdown(text: str) -> str:
 
 def build_accordion_md(md_body: str) -> str:
     """
-    Превращает Markdown-разделы (##/###/####) в аккордеон из <details>-плашек:
-    заголовок раздела становится <summary>, контент скрыт до клика.
-    Вложенные заголовки дают вложенные аккордеоны. Текст до первого ##
-    (заголовок документа и суть) остаётся открытым сверху.
+    Превращает Markdown-разделы в плоский аккордеон из <details>-плашек:
+    каждый заголовок (##/###/…) становится <summary> плашки верхнего уровня,
+    контент скрыт до клика. Вложенность НЕ используется — она ломает
+    структуру в Telegram. Заголовки-контейнеры без собственного текста
+    (например «Выжимка», у которой всё в подразделах) опускаются.
+    Текст до первого заголовка (название и суть) остаётся открытым сверху.
     """
-    res = []
-    stack = []  # уровни открытых <details>
+    segments = []  # (заголовок или None для преамбулы, строки контента)
+    heading, buf = None, []
     in_fence = False
     for line in md_body.splitlines():
         s = line.strip()
         if s.startswith("```"):
             in_fence = not in_fence
-            res.append(line)
+            buf.append(line)
             continue
-        m = None if in_fence else re.match(r'^(#{2,4})\s+(.*)$', s)
+        m = None if in_fence else re.match(r'^(#{2,6})\s+(.*)$', s)
         if m:
-            level = len(m.group(1))
-            while stack and stack[-1] >= level:
-                res.append("</details>")
-                stack.pop()
-            res.append(f"<details><summary>{m.group(2).strip()}</summary>")
-            res.append("")
-            stack.append(level)
+            segments.append((heading, buf))
+            heading, buf = m.group(2).strip(), []
         else:
-            res.append(line)
-    while stack:
-        res.append("</details>")
-        stack.pop()
-    return "\n".join(res)
+            buf.append(line)
+    segments.append((heading, buf))
+
+    res = []
+    for head, lines in segments:
+        content = "\n".join(lines).strip()
+        if head is None:
+            if content:
+                res.append(content)
+        elif content:
+            res.append(f"<details><summary>{head}</summary>\n\n{content}\n\n</details>")
+    return "\n\n".join(res)
 
 def build_post_from_document(content: str) -> str:
     """
