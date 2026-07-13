@@ -657,10 +657,9 @@ async def process_task(task: dict):
             return
 
         # Parse markers from final text.
-        # ВАЖНО: берём ПОСЛЕДНЕЕ совпадение — промпты содержат примеры "RESULT: NONE",
-        # и агент может процитировать их раньше настоящего маркера.
-        res_matches = re.findall(r'^RESULT:\s*(\S+)', full_output, re.MULTILINE)
-        sum_matches = re.findall(r'^SUMMARY:\s*(.+)$', full_output, re.MULTILINE)
+        # ВАЖНО: разрешаем пробелы перед маркерами, так как ИИ может сдвинуть их.
+        res_matches = re.findall(r'^\s*RESULT:\s*(\S+)', full_output, re.MULTILINE)
+        sum_matches = re.findall(r'^\s*SUMMARY:\s*(.+)$', full_output, re.MULTILINE)
 
         result_val = res_matches[-1] if res_matches else "NONE"
         summary_val = sum_matches[-1] if sum_matches else full_output[:300] + "..."
