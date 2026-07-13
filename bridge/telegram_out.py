@@ -68,14 +68,14 @@ def _paragraphs_to_h4(content: str) -> str:
 # Раздел «Ключевые идеи»: плашка раскрыта по умолчанию, маркеры вместо цифр
 KEY_IDEAS_RE = re.compile(r'ключев', re.IGNORECASE)
 
-def build_accordion_md(md_body: str) -> str:
+def build_accordion_blocks(md_body: str) -> list:
     """
-    Превращает Markdown-разделы в плоский аккордеон из <details>-плашек:
-    каждый заголовок (##/###/…) становится <summary> плашки верхнего уровня,
-    контент скрыт до клика. Вложенность НЕ используется — она ломает
-    структуру в Telegram. Заголовки-контейнеры без собственного текста
-    (например «Выжимка», у которой всё в подразделах) опускаются.
-    Текст до первого заголовка (название и суть) остаётся открытым сверху.
+    Превращает Markdown-разделы в список блоков плоского аккордеона:
+    преамбула (текст до первого заголовка, оформленный цитатой) и
+    <details>-плашки — по блоку на каждый заголовок (##/###/…).
+    Вложенность НЕ используется — она ломает структуру в Telegram.
+    Заголовки-контейнеры без собственного текста (например «Выжимка»,
+    у которой всё в подразделах) опускаются.
     """
     segments = []  # (заголовок или None для преамбулы, строки контента)
     heading, buf = None, []
@@ -110,7 +110,7 @@ def build_accordion_md(md_body: str) -> str:
             else:
                 content = _paragraphs_to_h4(content)
                 res.append(f"<details><summary><b>{head_clean}</b></summary>\n\n{content}\n\n</details>")
-    return "\n\n".join(res)
+    return res
 
 def _preamble_transform(content: str) -> str:
     """
@@ -126,11 +126,22 @@ def _preamble_transform(content: str) -> str:
             out_blocks.append(block)
     return "\n\n".join(out_blocks)
 
-def build_post_from_document(content: str) -> str:
+# Порог деления поста на части: клиент прячет длинные rich-посты за «Show more»
+# примерно после 8 000 символов — держим часть заметно короче.
+POST_PART_MAX_LEN = 7500
+
+def _title_header(title: str, part_no: int = 0) -> str:
+    """Шапка поста: дивайдеры до и после названия (капсом), опц. номер части."""
+    suffix = f" — Ч.{part_no}" if part_no else ""
+    return f"---\n\n# {title}{suffix}\n\n---"
+
+def build_post_parts(content: str, max_len: int = POST_PART_MAX_LEN) -> list:
     """
     Из содержимого raw-конспекта (с front-matter) готовит Telegram-пост:
-    сверху суть (текст TL;DR без ярлыка), ниже — разделы аккордеоном.
-    Оглавление убирается: роль оглавления играют свёрнутые плашки.
+    шапка с названием капсом в дивайдерах, суть цитатой (TL;DR без ярлыка),
+    ниже — разделы аккордеоном, дивайдер в конце.
+    Длинный пост делится на части по границам плашек: каждая часть получает
+    ту же шапку с пометкой «— Ч.N». Возвращает список Markdown-постов.
     """
     body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', content, flags=re.DOTALL)
     # Убираем раздел "Оглавление"/"Содержание" целиком
@@ -143,11 +154,41 @@ def build_post_from_document(content: str) -> str:
                   flags=re.MULTILINE | re.IGNORECASE)
     # Вики-ссылки [[Имя]] не кликабельны в TG — показываем жирным
     body = re.sub(r'\[\[(?:[^\]|]*\|)?([^\]]+)\]\]', r'**\1**', body)
-    # Дивайдеры до и после H1-названия (пустые строки обязательны,
-    # иначе --- под текстом превратится в setext-заголовок)
-    body = re.sub(r'^(#\s+.+)$', r'---\n\n\1\n\n---', body, count=1, flags=re.MULTILINE)
-    # Дивайдер в самом конце поста
-    return build_accordion_md(body.strip()) + "\n\n---"
+
+    # Название выносим из тела: оно капсом уходит в шапку каждой части
+    title = ""
+    m = re.search(r'^#\s+(.+)$', body, flags=re.MULTILINE)
+    if m:
+        title = strip_markdown(m.group(1)).upper()
+        body = body[:m.start()] + body[m.end():]
+
+    blocks = build_accordion_blocks(body.strip())
+
+    # Группируем блоки в части: плашки не режем, преамбула — всегда в первой
+    groups, current, current_len = [], [], 0
+    header_len = len(_title_header(title, 9))
+    for block in blocks:
+        if current and current_len + len(block) > max_len - header_len:
+            groups.append(current)
+            current, current_len = [], 0
+        current.append(block)
+        current_len += len(block) + 2
+    if current:
+        groups.append(current)
+    if not groups:
+        groups = [[]]
+
+    multi = len(groups) > 1
+    parts = []
+    for i, group in enumerate(groups, 1):
+        header = _title_header(title, i if multi else 0) if title else ""
+        chunk = "\n\n".join([header] + group if header else group)
+        parts.append(chunk + "\n\n---")
+    return parts
+
+def build_post_from_document(content: str) -> str:
+    """Пост одной строкой (для коротких документов и обратной совместимости)."""
+    return "\n\n".join(build_post_parts(content, max_len=10**9))
 
 # Лимит rich-сообщения по Bot API 10.1 — 32768 символов; берём с запасом.
 RICH_MESSAGE_MAX_LEN = 30000
@@ -174,17 +215,27 @@ def split_markdown_chunks(md_text: str, max_len: int = RICH_MESSAGE_MAX_LEN) -> 
         chunks.append(current)
     return chunks
 
-def send_markdown_text(chat_id: int, bot_token: str, md_text: str) -> bool:
+def send_markdown_text(chat_id: int, bot_token: str, md_text: str, sent_ids: list = None) -> bool:
     """
     Отправляет Markdown-текст в чат: rich-сообщениями, при неудаче — HTML-фолбэк.
     Текст длиннее лимита rich-сообщения разбивается на несколько сообщений.
+    В sent_ids (если передан список) складываются message_id всех отправленных
+    сообщений — для привязки реплай-сессий.
     """
     all_ok = True
     for chunk in split_markdown_chunks(md_text):
-        if not send_rich_message(chat_id, bot_token, chunk):
+        mid = send_rich_message(chat_id, bot_token, chunk)
+        if mid:
+            if sent_ids is not None and isinstance(mid, int):
+                sent_ids.append(mid)
+        else:
             # HTML-фолбэк ограничен 4096 символами — режем мельче
             for sub in split_markdown_chunks(chunk, max_len=3800):
-                if not send_html_message(chat_id, bot_token, convert_md_to_html_fallback(sub)):
+                mid = send_html_message(chat_id, bot_token, convert_md_to_html_fallback(sub))
+                if mid:
+                    if sent_ids is not None and isinstance(mid, int):
+                        sent_ids.append(mid)
+                else:
                     all_ok = False
     return all_ok
 
@@ -204,7 +255,11 @@ def send_rich_message(chat_id: int, bot_token: str, md_content: str) -> bool:
         response = httpx.post(url, json=payload, timeout=20)
         if response.status_code == 200:
             logger.info("Rich message sent successfully.")
-            return True
+            # message_id — истинное значение; True как фолбэк, если тела нет
+            try:
+                return response.json()["result"]["message_id"]
+            except Exception:
+                return True
         else:
             logger.error(f"Failed to send rich message (status {response.status_code}): {response.text}")
             return False
@@ -230,7 +285,12 @@ def send_html_message(chat_id: int, bot_token: str, text: str) -> bool:
         }
         logger.info(f"Sending standard HTML message to chat {chat_id}")
         response = httpx.post(url, json=payload, timeout=20)
-        return response.status_code == 200
+        if response.status_code == 200:
+            try:
+                return response.json()["result"]["message_id"]
+            except Exception:
+                return True
+        return False
     except Exception as e:
         logger.error(f"Error in send_html_message: {e}")
         return False

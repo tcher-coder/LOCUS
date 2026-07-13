@@ -17,7 +17,7 @@ from telegram_out import (
     send_document,
     send_markdown_text,
     strip_markdown,
-    build_post_from_document,
+    build_post_parts,
     convert_md_to_html_fallback,
     escape_html
 )
@@ -148,20 +148,21 @@ def extract_tldr_from_file(file_path: str) -> str:
         logger.error(f"Error extracting TL;DR: {e}")
     return "Архивный документ"
 
-def build_digest_from_file(file_path: str) -> str:
+def build_digest_from_file(file_path: str) -> list:
     """
     Готовит пост-выжимку для чата бота: суть сверху, разделы аккордеоном
-    (<details>-плашки вместо оглавления).
+    (<details>-плашки вместо оглавления). Длинные выжимки делятся на части
+    «— Ч.N»; возвращает список Markdown-постов.
     """
     if not os.path.exists(file_path):
-        return ""
+        return []
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-        return build_post_from_document(content)
+        return build_post_parts(content)
     except Exception as e:
         logger.error(f"Error building digest from {file_path}: {e}")
-        return ""
+        return []
 
 async def handle_callback_query(cq: dict):
     cq_id = cq["id"]
@@ -733,10 +734,13 @@ async def process_task(task: dict):
             # Full ingest delivery (фаза 1 завершена: конспект создан)
             doc_abs_path = os.path.join(VAULT_DIR, result_val)
 
-            # 1. Выжимка текстом прямо в чат (без файла, без TL;DR)
-            digest_md = build_digest_from_file(doc_abs_path)
-            if digest_md:
-                send_markdown_text(chat_id, BOT_TOKEN, digest_md)
+            # 1. Выжимка текстом прямо в чат (без файла), длинная — частями «Ч.N».
+            #    message_id частей собираем: реплай на любую часть продолжит сессию.
+            digest_parts = build_digest_from_file(doc_abs_path)
+            digest_msg_ids = []
+            if digest_parts:
+                for part in digest_parts:
+                    send_markdown_text(chat_id, BOT_TOKEN, part, sent_ids=digest_msg_ids)
             else:
                 # Фолбэк: если выжимку не удалось подготовить — отправляем файл
                 send_document(chat_id, BOT_TOKEN, doc_abs_path, caption=f"📄 {os.path.basename(result_val)}")
@@ -776,9 +780,12 @@ async def process_task(task: dict):
                 if wiki_ok:
                     commit_vault_changes(result_val, prefix="Wiki update")
 
-            # 5. Привязать сессию к статус-сообщению — реплай на него продолжит диалог с агентом
+            # 5. Привязать сессию к статус-сообщению и всем частям выжимки —
+            #    реплай на любое из них продолжит диалог с агентом
             if captured_session_id:
                 reply_session_map[status_msg_id] = captured_session_id
+                for mid in digest_msg_ids:
+                    reply_session_map[mid] = captured_session_id
                 _save_session_map()
                 if not WIKI_ENABLED:
                     wiki_note = "память отключена"

@@ -5,7 +5,7 @@ import yaml
 import logging
 from datetime import datetime
 
-from telegram_out import send_markdown_text, build_post_from_document
+from telegram_out import send_markdown_text, build_post_parts
 
 logger = logging.getLogger("locus.archive")
 
@@ -52,10 +52,11 @@ def format_hashtag(tag: str) -> str:
         return ""
     return "#" + tag
 
-def build_channel_post(abs_path: str) -> str:
+def build_channel_post(abs_path: str) -> list:
     """
-    Готовит rich-пост для архивного канала из raw-конспекта: суть сверху,
-    разделы аккордеоном (<details>), хэштеги в конце.
+    Готовит rich-пост(ы) для архивного канала из raw-конспекта: суть сверху,
+    разделы аккордеоном (<details>), хэштеги в конце последней части.
+    Длинный конспект делится на части «— Ч.N».
     Файлы в канал не отправляются — .md от ботов Telegram открывает криво
     (расширения .md нет в таблице MIME-типов Bot API).
     """
@@ -70,7 +71,7 @@ def build_channel_post(abs_path: str) -> str:
         except Exception:
             meta = {}
 
-    body = build_post_from_document(content)
+    parts = build_post_parts(content)
 
     hashtags = [format_hashtag(str(meta.get("type", "text")))]
     tags = meta.get("tags", [])
@@ -81,9 +82,9 @@ def build_channel_post(abs_path: str) -> str:
                 hashtags.append(formatted)
     hashtag_line = " ".join(filter(None, hashtags))
 
-    if hashtag_line:
-        body = f"{body}\n\n{hashtag_line}"
-    return body
+    if hashtag_line and parts:
+        parts[-1] = f"{parts[-1]}\n\n{hashtag_line}"
+    return parts
 
 def archive_post(doc_rel_path: str, bot_token: str, channel_id: str, vault_dir: str) -> bool:
     """
@@ -100,13 +101,14 @@ def archive_post(doc_rel_path: str, bot_token: str, channel_id: str, vault_dir: 
         return False
 
     try:
-        post_md = build_channel_post(abs_path)
+        post_parts = build_channel_post(abs_path)
         filename = os.path.basename(doc_rel_path)
 
-        logger.info(f"Posting rich post for {filename} to archive channel {channel_id}")
-        if not send_markdown_text(channel_id, bot_token, post_md):
-            logger.error("Failed to post rich message to archive channel.")
-            return False
+        logger.info(f"Posting rich post ({len(post_parts)} part(s)) for {filename} to archive channel {channel_id}")
+        for part in post_parts:
+            if not send_markdown_text(channel_id, bot_token, part):
+                logger.error("Failed to post rich message to archive channel.")
+                return False
 
         index = load_archive_index()
         index[filename] = {"posted_at": datetime.now().isoformat()}
