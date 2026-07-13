@@ -842,6 +842,10 @@ async def polling_loop():
                     logger.warning(f"Ignored message from unauthorized user {user_id} (@{from_user.get('username')})")
                     continue
                     
+                # Диагностика: метаданные присланных/пересланных документов
+                if message.get("document"):
+                    logger.info(f"Incoming document metadata: {message['document']}")
+
                 text = message.get("text")
                 if not text:
                     continue
