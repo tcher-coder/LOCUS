@@ -1,0 +1,12 @@
+# LOCUS на сервере: один контейнер, long polling — без портов, без ingress (Caddy не нужен).
+services:
+  locus:
+    build: .
+    container_name: locus-bridge
+    restart: always
+    env_file: .env            # секреты лежат в <install-dir>/.env (chmod 600, не в git)
+    environment:
+      - LOCUS_DATA_DIR=/app/data
+    volumes:
+      - ./vault:/app/vault    # база знаний (git-репозиторий, живёт на хосте)
+      - ./data:/app/data      # archive_index.json и прочее состояние

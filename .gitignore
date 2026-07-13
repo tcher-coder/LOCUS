@@ -1,0 +1,22 @@
+# secrets
+bridge/.env
+.env
+
+# личная база знаний — НЕ публикуется (в репо только vault.template/)
+vault/
+
+# состояние рантайма
+data/
+bridge/archive_index.json
+
+# деплой-документ этого инстанса (личная инфраструктура)
+DEPLOYMENT.md
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# logs
+*.log
+logs/

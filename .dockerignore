@@ -1,0 +1,9 @@
+.git
+vault
+vault/**
+data
+bridge/.env
+.env
+DEPLOYMENT.md
+*.log
+__pycache__
