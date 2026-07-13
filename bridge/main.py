@@ -162,6 +162,8 @@ def build_digest_from_file(file_path: str) -> str:
             r'^#{1,4}\s*(Оглавление|Содержание|TL;?DR).*?(?=^#{1,4}\s|\Z)',
             '', content, flags=re.MULTILINE | re.DOTALL | re.IGNORECASE
         )
+        # Вики-ссылки [[Имя]] в чате не кликабельны — показываем жирным
+        content = re.sub(r'\[\[(?:[^\]|]*\|)?([^\]]+)\]\]', r'**\1**', content)
         return content.strip()
     except Exception as e:
         logger.error(f"Error building digest from {file_path}: {e}")
@@ -293,7 +295,7 @@ def run_git_command(cwd, args):
         res = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True, check=True)
         return res.stdout
     except subprocess.CalledProcessError as e:
-        logger.error(f"Git command failed: {e.stderr}")
+        logger.error(f"Git command failed: stderr={e.stderr!r} stdout={e.stdout!r}")
         raise
 
 def commit_vault_changes(rel_path, prefix="Ingested"):
@@ -312,6 +314,11 @@ def commit_vault_changes(rel_path, prefix="Ingested"):
         run_git_command(VAULT_DIR, ["add", "."])
         run_git_command(VAULT_DIR, ["commit", "-m", f"{prefix}: {title}"])
         logger.info(f"Committed changes for {rel_path} in vault")
+    except subprocess.CalledProcessError as e:
+        if "nothing to commit" in (e.stdout or ""):
+            logger.info(f"Vault: nothing to commit ({prefix}: {title})")
+        else:
+            logger.error(f"Failed to commit changes in vault: {e}")
     except Exception as e:
         logger.error(f"Failed to commit changes in vault: {e}")
 
