@@ -821,7 +821,31 @@ async def queue_worker():
             active_task = None
             queue.task_done()
 
+async def register_commands():
+    commands = [
+        {"command": "ask", "description": "Задать вопрос по базе знаний (ИИ)"},
+        {"command": "lint", "description": "Запустить гигиену базы знаний (ИИ)"},
+        {"command": "archive", "description": "Показать последние конспекты (локально)"},
+        {"command": "find", "description": "Поиск по тексту конспектов (локально)"},
+        {"command": "get", "description": "Скачать конспект по названию (локально)"},
+        {"command": "digest", "description": "Показать лог изменений базы (локально)"},
+        {"command": "backfill", "description": "Догрузить файлы в архивный канал (локально)"},
+        {"command": "stats", "description": "Показать статистику за сегодня и токен"}
+    ]
+    logger.info("Registering bot commands in Telegram...")
+    try:
+        response = await send_tg_api("setMyCommands", {"commands": commands})
+        if response.status_code == 200 and response.json().get("ok"):
+            logger.info("Bot commands registered successfully!")
+        else:
+            logger.error(f"Failed to register bot commands: {response.text}")
+    except Exception as e:
+        logger.error(f"Error registering bot commands: {e}")
+
 async def main():
+    # Register commands at startup
+    await register_commands()
+    
     # Run polling loop and queue worker concurrently
     await asyncio.gather(
         polling_loop(),
