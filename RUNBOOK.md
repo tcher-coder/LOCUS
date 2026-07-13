@@ -42,8 +42,7 @@ docker restart locus-bridge                # перезапуск (offset оче
 1. Создать приватный канал, добавить бота админом с правами «Публикация сообщений» + «Изменение профиля канала».
 2. Узнать ID канала (`-100…`): переслать пост канала боту @userinfobot.
 3. В `.env`: `ARCHIVE_CHANNEL_ID=-100…` → `docker restart locus-bridge`.
-4. Аватар канала: `python bridge/set_channel_avatar.py` (использует `avatars/archive_avatar.png`).
-5. `/backfill` в боте — догрузит существующие конспекты в канал.
+4. `/backfill` в боте — догрузит существующие конспекты.
 
 ## Данные
 
