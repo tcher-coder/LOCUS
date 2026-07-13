@@ -20,13 +20,17 @@ from telegram_out import (
 )
 from archive import archive_post
 
-# Setup logging
+# Setup data dir and logging
+_DATA_DIR = os.getenv("LOCUS_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(_DATA_DIR, exist_ok=True)
+log_file = os.path.join(_DATA_DIR, "bridge.log")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bridge.log", encoding="utf-8")
+        logging.FileHandler(log_file, encoding="utf-8")
     ]
 )
 logger = logging.getLogger("locus.main")
@@ -67,8 +71,6 @@ active_task = None
 tasks_processed_today = 0
 last_processed_date = date.today()
 # Reply map: bot_message_id -> session_id (persisted to disk)
-_DATA_DIR = os.getenv("LOCUS_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
-os.makedirs(_DATA_DIR, exist_ok=True)
 SESSION_MAP_FILE = os.path.join(_DATA_DIR, "session_map.json")
 
 import json as _json
