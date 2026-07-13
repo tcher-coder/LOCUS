@@ -43,48 +43,17 @@ def parse_yaml_front_matter(file_path: str) -> dict:
         logger.error(f"Error parsing YAML front matter from {file_path}: {e}")
     return {}
 
-def format_hashtag(tag: str) -> str:
-    """Formats a tag string into a valid Telegram hashtag."""
-    tag = tag.strip().lower()
-    tag = re.sub(r'[\s\-\.\/]+', '_', tag)
-    tag = re.sub(r'[^\w]', '', tag, flags=re.UNICODE)
-    if not tag:
-        return ""
-    return "#" + tag
-
 def build_channel_post(abs_path: str) -> list:
     """
     Готовит rich-пост(ы) для архивного канала из raw-конспекта: суть сверху,
-    разделы аккордеоном (<details>), хэштеги в конце последней части.
-    Длинный конспект делится на части «— Ч.N».
+    разделы аккордеоном (<details>). Длинный конспект делится на части «— Ч.N».
+    Хэштеги не добавляются (решение владельца, 2026-07).
     Файлы в канал не отправляются — .md от ботов Telegram открывает криво
     (расширения .md нет в таблице MIME-типов Bot API).
     """
     with open(abs_path, "r", encoding="utf-8") as f:
         content = f.read()
-
-    meta_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
-    meta = {}
-    if meta_match:
-        try:
-            meta = yaml.safe_load(meta_match.group(1)) or {}
-        except Exception:
-            meta = {}
-
-    parts = build_post_parts(content)
-
-    hashtags = [format_hashtag(str(meta.get("type", "text")))]
-    tags = meta.get("tags", [])
-    if isinstance(tags, list):
-        for t in tags:
-            formatted = format_hashtag(str(t))
-            if formatted:
-                hashtags.append(formatted)
-    hashtag_line = " ".join(filter(None, hashtags))
-
-    if hashtag_line and parts:
-        parts[-1] = f"{parts[-1]}\n\n{hashtag_line}"
-    return parts
+    return build_post_parts(content)
 
 def archive_post(doc_rel_path: str, bot_token: str, channel_id: str, vault_dir: str) -> bool:
     """
