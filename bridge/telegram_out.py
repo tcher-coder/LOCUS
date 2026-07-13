@@ -96,9 +96,6 @@ def build_post_from_document(content: str) -> str:
                   flags=re.MULTILINE | re.IGNORECASE)
     # Вики-ссылки [[Имя]] не кликабельны в TG — показываем жирным
     body = re.sub(r'\[\[(?:[^\]|]*\|)?([^\]]+)\]\]', r'**\1**', body)
-    # H1-название рендерится слишком крупно относительно остального поста —
-    # показываем жирной строкой (не ##+, чтобы не стать плашкой аккордеона)
-    body = re.sub(r'^#\s+(.+)$', r'**\1**', body, flags=re.MULTILINE)
     return build_accordion_md(body.strip())
 
 # Лимит rich-сообщения по Bot API 10.1 — 32768 символов; берём с запасом.

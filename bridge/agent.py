@@ -68,6 +68,11 @@ async def run_locus_agent(
                 for block in message.content:
                     # Text chunks
                     if isinstance(block, TextBlock):
+                        # Блоки — самостоятельные фрагменты; без переноса между ними
+                        # маркер RESULT: может слипнуться с предыдущим текстом
+                        # и не пройти ^-регэксп парсера маркеров в main.py
+                        if full_response_text and not full_response_text.endswith("\n"):
+                            full_response_text += "\n"
                         full_response_text += block.text
                         yield {"type": "chunk", "text": block.text}
                     
