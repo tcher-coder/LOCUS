@@ -41,6 +41,57 @@ def strip_markdown(text: str) -> str:
     t = re.sub(r'^\s*>\s?', '', t, flags=re.MULTILINE)
     return t.strip()
 
+def build_accordion_md(md_body: str) -> str:
+    """
+    Превращает Markdown-разделы (##/###/####) в аккордеон из <details>-плашек:
+    заголовок раздела становится <summary>, контент скрыт до клика.
+    Вложенные заголовки дают вложенные аккордеоны. Текст до первого ##
+    (заголовок документа и суть) остаётся открытым сверху.
+    """
+    res = []
+    stack = []  # уровни открытых <details>
+    in_fence = False
+    for line in md_body.splitlines():
+        s = line.strip()
+        if s.startswith("```"):
+            in_fence = not in_fence
+            res.append(line)
+            continue
+        m = None if in_fence else re.match(r'^(#{2,4})\s+(.*)$', s)
+        if m:
+            level = len(m.group(1))
+            while stack and stack[-1] >= level:
+                res.append("</details>")
+                stack.pop()
+            res.append(f"<details><summary>{m.group(2).strip()}</summary>")
+            res.append("")
+            stack.append(level)
+        else:
+            res.append(line)
+    while stack:
+        res.append("</details>")
+        stack.pop()
+    return "\n".join(res)
+
+def build_post_from_document(content: str) -> str:
+    """
+    Из содержимого raw-конспекта (с front-matter) готовит Telegram-пост:
+    сверху суть (текст TL;DR без ярлыка), ниже — разделы аккордеоном.
+    Оглавление убирается: роль оглавления играют свёрнутые плашки.
+    """
+    body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', content, flags=re.DOTALL)
+    # Убираем раздел "Оглавление"/"Содержание" целиком
+    body = re.sub(
+        r'^#{1,4}\s*(Оглавление|Содержание)\b.*?(?=^#{1,4}\s|\Z)',
+        '', body, flags=re.MULTILINE | re.DOTALL | re.IGNORECASE
+    )
+    # Заголовок TL;DR убираем, сам текст сути остаётся открытым сверху
+    body = re.sub(r'^#{1,4}\s*TL;?DR\s*:?\s*$\n?', '', body,
+                  flags=re.MULTILINE | re.IGNORECASE)
+    # Вики-ссылки [[Имя]] не кликабельны в TG — показываем жирным
+    body = re.sub(r'\[\[(?:[^\]|]*\|)?([^\]]+)\]\]', r'**\1**', body)
+    return build_accordion_md(body.strip())
+
 # Лимит rich-сообщения по Bot API 10.1 — 32768 символов; берём с запасом.
 RICH_MESSAGE_MAX_LEN = 30000
 

@@ -5,7 +5,7 @@ import yaml
 import logging
 from datetime import datetime
 
-from telegram_out import send_markdown_text
+from telegram_out import send_markdown_text, build_post_from_document
 
 logger = logging.getLogger("locus.archive")
 
@@ -54,8 +54,8 @@ def format_hashtag(tag: str) -> str:
 
 def build_channel_post(abs_path: str) -> str:
     """
-    Готовит Markdown rich-поста для архивного канала из raw-конспекта:
-    без front-matter и оглавления (TL;DR остаётся), с хэштегами в конце.
+    Готовит rich-пост для архивного канала из raw-конспекта: суть сверху,
+    разделы аккордеоном (<details>), хэштеги в конце.
     Файлы в канал не отправляются — .md от ботов Telegram открывает криво
     (расширения .md нет в таблице MIME-типов Bot API).
     """
@@ -70,13 +70,7 @@ def build_channel_post(abs_path: str) -> str:
         except Exception:
             meta = {}
 
-    body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', content, flags=re.DOTALL)
-    body = re.sub(
-        r'^#{1,4}\s*(Оглавление|Содержание).*?(?=^#{1,4}\s|\Z)',
-        '', body, flags=re.MULTILINE | re.DOTALL | re.IGNORECASE
-    )
-    # Вики-ссылки [[Имя]] в канале не кликабельны — показываем жирным
-    body = re.sub(r'\[\[(?:[^\]|]*\|)?([^\]]+)\]\]', r'**\1**', body).strip()
+    body = build_post_from_document(content)
 
     hashtags = [format_hashtag(str(meta.get("type", "text")))]
     tags = meta.get("tags", [])

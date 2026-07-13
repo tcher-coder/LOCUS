@@ -17,6 +17,7 @@ from telegram_out import (
     send_document,
     send_markdown_text,
     strip_markdown,
+    build_post_from_document,
     convert_md_to_html_fallback,
     escape_html
 )
@@ -147,24 +148,15 @@ def extract_tldr_from_file(file_path: str) -> str:
 
 def build_digest_from_file(file_path: str) -> str:
     """
-    Готовит текст выжимки для отправки в чат бота:
-    убирает YAML front-matter, оглавление и раздел TL;DR
-    (TL;DR уходит только в архивный канал как подпись к файлу).
+    Готовит пост-выжимку для чата бота: суть сверху, разделы аккордеоном
+    (<details>-плашки вместо оглавления).
     """
     if not os.path.exists(file_path):
         return ""
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-        content = re.sub(r'^---\s*\n.*?\n---\s*\n', '', content, flags=re.DOTALL)
-        # Убираем разделы "Оглавление"/"Содержание" и "TL;DR" (до следующего заголовка)
-        content = re.sub(
-            r'^#{1,4}\s*(Оглавление|Содержание|TL;?DR).*?(?=^#{1,4}\s|\Z)',
-            '', content, flags=re.MULTILINE | re.DOTALL | re.IGNORECASE
-        )
-        # Вики-ссылки [[Имя]] в чате не кликабельны — показываем жирным
-        content = re.sub(r'\[\[(?:[^\]|]*\|)?([^\]]+)\]\]', r'**\1**', content)
-        return content.strip()
+        return build_post_from_document(content)
     except Exception as e:
         logger.error(f"Error building digest from {file_path}: {e}")
         return ""
