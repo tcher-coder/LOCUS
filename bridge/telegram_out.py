@@ -142,12 +142,10 @@ def send_document(chat_id: int, bot_token: str, file_path: str, caption: str = "
 
         with open(file_path, "rb") as f:
             content = f.read()
-        # UTF-8 BOM — иначе просмотрщик Telegram может не распознать кодировку
-        # и показать кириллицу «иероглифами». Файл в vault не меняем.
-        if filename.lower().endswith((".md", ".txt")) and not content.startswith(b"\xef\xbb\xbf"):
-            content = b"\xef\xbb\xbf" + content
-
-        files = {"document": (filename, content)}
+        # Явный MIME text/markdown — без него Telegram считает файл бинарным
+        # (octet-stream) и ломает предпросмотр/кодировку.
+        mime = "text/markdown" if filename.lower().endswith(".md") else None
+        files = {"document": (filename, content, mime) if mime else (filename, content)}
         data = {"chat_id": chat_id, "caption": caption}
         response = httpx.post(url, data=data, files=files, timeout=30)
 
