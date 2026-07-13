@@ -48,6 +48,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 CLAUDE_CODE_OAUTH_TOKEN = os.getenv("CLAUDE_CODE_OAUTH_TOKEN")
 ARCHIVE_CHANNEL_ID = os.getenv("ARCHIVE_CHANNEL_ID")
 TASK_TIMEOUT_SEC = int(os.getenv("TASK_TIMEOUT_MIN", "30")) * 60
+# Фаза 2 (память/вики по Карпатому) временно отключена; вернуть — WIKI_ENABLED=1
+WIKI_ENABLED = os.getenv("WIKI_ENABLED", "0").lower() in ("1", "true", "yes")
 
 # ANTHROPIC_API_KEY перекрывает подписочную аутентификацию — убираем принудительно (EPIC 2.1)
 if os.environ.pop("ANTHROPIC_API_KEY", None):
@@ -753,7 +755,7 @@ async def process_task(task: dict):
 
             # 4. Фаза 2: обновление вики (память) — ПОСЛЕ доставки, чтобы не заставлять ждать
             wiki_ok = False
-            if captured_session_id:
+            if WIKI_ENABLED and captured_session_id:
                 await edit_status_message(chat_id, status_msg_id,
                                           "🧠 Конспект доставлен. Обновляю базу знаний (память)...")
                 wiki_prompt = read_prompt_template("update_wiki.md").replace("{{DOC_PATH}}", result_val)
@@ -778,7 +780,12 @@ async def process_task(task: dict):
             if captured_session_id:
                 reply_session_map[status_msg_id] = captured_session_id
                 _save_session_map()
-                wiki_note = "память обновлена" if wiki_ok else "⚠️ память НЕ обновлена (см. логи)"
+                if not WIKI_ENABLED:
+                    wiki_note = "память отключена"
+                elif wiki_ok:
+                    wiki_note = "память обновлена"
+                else:
+                    wiki_note = "⚠️ память НЕ обновлена (см. логи)"
                 await edit_status_message(chat_id, status_msg_id,
                                           f"✅ Готово: конспект доставлен, {wiki_note}. "
                                           "Ответь реплаем на это сообщение, чтобы продолжить сессию.")
