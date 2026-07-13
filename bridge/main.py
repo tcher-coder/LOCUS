@@ -15,6 +15,8 @@ from telegram_out import (
     send_rich_message,
     send_html_message,
     send_document,
+    send_markdown_text,
+    strip_markdown,
     convert_md_to_html_fallback,
     escape_html
 )
@@ -142,6 +144,28 @@ def extract_tldr_from_file(file_path: str) -> str:
     except Exception as e:
         logger.error(f"Error extracting TL;DR: {e}")
     return "Архивный документ"
+
+def build_digest_from_file(file_path: str) -> str:
+    """
+    Готовит текст выжимки для отправки в чат бота:
+    убирает YAML front-matter, оглавление и раздел TL;DR
+    (TL;DR уходит только в архивный канал как подпись к файлу).
+    """
+    if not os.path.exists(file_path):
+        return ""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        content = re.sub(r'^---\s*\n.*?\n---\s*\n', '', content, flags=re.DOTALL)
+        # Убираем разделы "Оглавление"/"Содержание" и "TL;DR" (до следующего заголовка)
+        content = re.sub(
+            r'^#{1,4}\s*(Оглавление|Содержание|TL;?DR).*?(?=^#{1,4}\s|\Z)',
+            '', content, flags=re.MULTILINE | re.DOTALL | re.IGNORECASE
+        )
+        return content.strip()
+    except Exception as e:
+        logger.error(f"Error building digest from {file_path}: {e}")
+        return ""
 
 async def handle_callback_query(cq: dict):
     cq_id = cq["id"]
@@ -272,21 +296,21 @@ def run_git_command(cwd, args):
         logger.error(f"Git command failed: {e.stderr}")
         raise
 
-def commit_vault_changes(rel_path):
+def commit_vault_changes(rel_path, prefix="Ingested"):
     """
     Adds and commits changes to the vault repository.
     Message matches the document title if available.
     """
     abs_path = os.path.join(VAULT_DIR, rel_path)
     title = "Updated base"
-    
+
     if os.path.exists(abs_path) and rel_path.startswith("raw/"):
         meta = parse_yaml_front_matter(abs_path)
         title = meta.get("title", f"Ingested {os.path.basename(rel_path)}")
-        
+
     try:
         run_git_command(VAULT_DIR, ["add", "."])
-        run_git_command(VAULT_DIR, ["commit", "-m", f"Ingested: {title}"])
+        run_git_command(VAULT_DIR, ["commit", "-m", f"{prefix}: {title}"])
         logger.info(f"Committed changes for {rel_path} in vault")
     except Exception as e:
         logger.error(f"Failed to commit changes in vault: {e}")
@@ -690,36 +714,59 @@ async def process_task(task: dict):
             # Delete status message
             await send_tg_api("deleteMessage", {"chat_id": chat_id, "message_id": status_msg_id})
         else:
-            # Full ingest delivery
-            # 1. Send document
+            # Full ingest delivery (фаза 1 завершена: конспект создан)
             doc_abs_path = os.path.join(VAULT_DIR, result_val)
-            send_document(chat_id, BOT_TOKEN, doc_abs_path, caption=f"📄 {os.path.basename(result_val)}")
-            
-            # 2. Convert raw file or summary to RichMessage
-            # Send the summary + TL;DR in the chat
-            rich_content = f"# Импорт завершен!\n\n{summary_val}\n\n**Файл:** `{result_val}`"
-            success_sent = send_rich_message(chat_id, BOT_TOKEN, rich_content)
-            if not success_sent:
-                html_fallback = convert_md_to_html_fallback(rich_content)
-                send_html_message(chat_id, BOT_TOKEN, html_fallback)
-                
-            # 3. Post to archive channel (Story A1)
+
+            # 1. Выжимка текстом прямо в чат (без файла, без TL;DR)
+            digest_md = build_digest_from_file(doc_abs_path)
+            if digest_md:
+                send_markdown_text(chat_id, BOT_TOKEN, digest_md)
+            else:
+                # Фолбэк: если выжимку не удалось подготовить — отправляем файл
+                send_document(chat_id, BOT_TOKEN, doc_abs_path, caption=f"📄 {os.path.basename(result_val)}")
+
+            # 2. Архивный канал: файл + TL;DR чистым текстом (без разметки)
             if ARCHIVE_CHANNEL_ID:
                 try:
-                    archive_post(result_val, summary_val, BOT_TOKEN, ARCHIVE_CHANNEL_ID, VAULT_DIR)
+                    archive_post(result_val, strip_markdown(summary_val), BOT_TOKEN, ARCHIVE_CHANNEL_ID, VAULT_DIR)
                 except Exception as ae:
                     logger.error(f"Error posting to archive channel: {ae}")
-                
-            # 4. Git commit in vault
+
+            # 3. Git commit конспекта
             commit_vault_changes(result_val)
             tasks_processed_today += 1
+
+            # 4. Фаза 2: обновление вики (память) — ПОСЛЕ доставки, чтобы не заставлять ждать
+            wiki_ok = False
+            if captured_session_id:
+                await edit_status_message(chat_id, status_msg_id,
+                                          "🧠 Конспект доставлен. Обновляю базу знаний (память)...")
+                wiki_prompt = read_prompt_template("update_wiki.md").replace("{{DOC_PATH}}", result_val)
+                try:
+                    async with asyncio.timeout(TASK_TIMEOUT_SEC):
+                        async for event in run_locus_agent(wiki_prompt, VAULT_DIR, effort, GROQ_API_KEY,
+                                                           resume_session_id=captured_session_id):
+                            if event["type"] == "session_id":
+                                captured_session_id = event["session_id"]
+                            elif event["type"] == "result":
+                                wiki_ok = event["success"]
+                                if not wiki_ok:
+                                    logger.error(f"Wiki update phase failed: {event.get('error')}")
+                except TimeoutError:
+                    logger.error("Wiki update phase timed out")
+                except Exception as we:
+                    logger.exception(f"Wiki update phase error: {we}")
+                if wiki_ok:
+                    commit_vault_changes(result_val, prefix="Wiki update")
 
             # 5. Привязать сессию к статус-сообщению — реплай на него продолжит диалог с агентом
             if captured_session_id:
                 reply_session_map[status_msg_id] = captured_session_id
                 _save_session_map()
+                wiki_note = "память обновлена" if wiki_ok else "⚠️ память НЕ обновлена (см. логи)"
                 await edit_status_message(chat_id, status_msg_id,
-                                          "✅ Готово. Ответь реплаем на это сообщение, чтобы продолжить сессию (уточнения, доработка).")
+                                          f"✅ Готово: конспект доставлен, {wiki_note}. "
+                                          "Ответь реплаем на это сообщение, чтобы продолжить сессию.")
             else:
                 # Delete status message
                 await send_tg_api("deleteMessage", {"chat_id": chat_id, "message_id": status_msg_id})

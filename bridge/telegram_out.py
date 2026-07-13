@@ -200,10 +200,19 @@ def markdown_to_rich_message(md_text: str) -> dict:
         # 7. Standard Paragraph
         # Collect consecutive non-empty lines as a single paragraph
         para_lines = []
-        while i < n and lines[i].strip() and not lines[i].strip().startswith(("#", ">", "```", "|", "-", "*", "+")) and not re.match(r'^\d+\.\s', lines[i].strip()):
+        while i < n and lines[i].strip() and not lines[i].strip().startswith(("#", ">", "```", "|")) \
+                and not re.match(r'^[-\*\+]\s+', lines[i].strip()) \
+                and not re.match(r'^\d+\.\s', lines[i].strip()):
             para_lines.append(lines[i].strip())
             i += 1
-            
+
+        if not para_lines:
+            # Строка похожа на начало блока, но не распарсилась выше
+            # (например, "**жирный**" или одинокая "|"). Обязаны потребить её,
+            # иначе внешний цикл зациклится и заблокирует весь процесс.
+            para_lines.append(lines[i].strip())
+            i += 1
+
         blocks.append({
             "type": "paragraph",
             "text": parse_inline_markdown("\n".join(para_lines))
@@ -229,6 +238,57 @@ def convert_md_to_html_fallback(md_text: str) -> str:
     # Replace links
     text = re.sub(r'\[(.*?)\]\((.*?)\)', r'<a href="\2">\1</a>', text)
     return text
+
+def strip_markdown(text: str) -> str:
+    """
+    Убирает Markdown-разметку, оставляя чистый текст.
+    Используется для TL;DR-подписи в архивном канале (без рич-разметки).
+    """
+    t = text
+    t = re.sub(r'```[a-zA-Z]*\n?', '', t)
+    t = re.sub(r'^#{1,6}\s+', '', t, flags=re.MULTILINE)
+    t = re.sub(r'\*\*(.*?)\*\*', r'\1', t)
+    t = re.sub(r'__(.*?)__', r'\1', t)
+    t = re.sub(r'\*(.*?)\*', r'\1', t)
+    t = re.sub(r'(?<!\w)_(.*?)_(?!\w)', r'\1', t)
+    t = re.sub(r'`([^`]*)`', r'\1', t)
+    t = re.sub(r'\[(.*?)\]\((.*?)\)', r'\1', t)
+    t = re.sub(r'^\s*>\s?', '', t, flags=re.MULTILINE)
+    return t.strip()
+
+def split_markdown_chunks(md_text: str, max_len: int = 3500) -> list:
+    """
+    Режет Markdown на части не длиннее max_len по границам блоков (пустым строкам),
+    чтобы каждую часть можно было отправить отдельным сообщением.
+    """
+    chunks = []
+    current = ""
+    for block in re.split(r'\n\s*\n', md_text):
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) > max_len and current:
+            chunks.append(current)
+            current = block
+        else:
+            current = candidate
+        # Одиночный блок длиннее лимита — режем жёстко
+        while len(current) > max_len:
+            chunks.append(current[:max_len])
+            current = current[max_len:]
+    if current.strip():
+        chunks.append(current)
+    return chunks
+
+def send_markdown_text(chat_id: int, bot_token: str, md_text: str) -> bool:
+    """
+    Отправляет Markdown-текст в чат: rich-сообщениями, при неудаче — HTML-фолбэк.
+    Длинный текст разбивается на несколько сообщений.
+    """
+    all_ok = True
+    for chunk in split_markdown_chunks(md_text):
+        if not send_rich_message(chat_id, bot_token, chunk):
+            if not send_html_message(chat_id, bot_token, convert_md_to_html_fallback(chunk)):
+                all_ok = False
+    return all_ok
 
 def send_rich_message(chat_id: int, bot_token: str, md_content: str) -> bool:
     """
