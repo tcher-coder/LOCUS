@@ -155,7 +155,7 @@ def markdown_to_rich_message(md_text: str) -> dict:
             continue
             
         # 6. Lists (bullet or numbered)
-        if line.startswith(("-", "*", "+")) or re.match(r'^\d+\.\s', line):
+        if re.match(r'^[-\*\+]\s+', line) or re.match(r'^\d+\.\s', line):
             list_items = []
             while i < n:
                 l = lines[i].strip()
