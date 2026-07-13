@@ -89,12 +89,11 @@ def build_accordion_blocks(md_body: str) -> list:
             # Заголовок плашки жирным, иначе он рендерится мельче основного текста
             head_clean = escape_html(strip_markdown(head))
             if KEY_IDEAS_RE.search(head):
-                # Ключевые идеи: раскрыты по умолчанию, цифры → маркеры
+                # Ключевые идеи: цифры → маркеры; свёрнуты, как и остальные плашки
                 content = re.sub(r'^(\s*)\d+[.)]\s+', r'\1- ', content, flags=re.MULTILINE)
-                res.append(f"<details open><summary><b>{head_clean}</b></summary>\n\n{content}\n\n</details>")
             else:
                 content = _paragraphs_to_h4(content)
-                res.append(f"<details><summary><b>{head_clean}</b></summary>\n\n{content}\n\n</details>")
+            res.append(f"<details><summary><b>{head_clean}</b></summary>\n\n{content}\n\n</details>")
     return res
 
 def _preamble_transform(content: str) -> str:
