@@ -41,6 +41,33 @@ def strip_markdown(text: str) -> str:
     t = re.sub(r'^\s*>\s?', '', t, flags=re.MULTILINE)
     return t.strip()
 
+def _paragraphs_to_h4(content: str) -> str:
+    """
+    ЭКСПЕРИМЕНТ: обычные текстовые абзацы рендерим H4-заголовком (####) —
+    у rich-сообщений тело крупнее обычного, H4 визуально ближе к норме.
+    Списки, таблицы, цитаты, код и готовые заголовки не трогаем.
+    Вызывается ПОСЛЕ разбиения на секции, чтобы #### не стали плашками.
+    """
+    out_blocks = []
+    in_fence = False
+    for block in re.split(r'\n\s*\n', content):
+        lines = [l for l in block.splitlines() if l.strip()]
+        has_fence = any(l.strip().startswith("```") for l in lines)
+        is_plain = (
+            not in_fence and not has_fence and lines
+            and all(not re.match(r'^\s*([-*>|#+]|\d+[.)]\s|```)', l) for l in lines)
+        )
+        if has_fence and len([l for l in lines if l.strip().startswith("```")]) % 2 == 1:
+            in_fence = not in_fence
+        if is_plain:
+            out_blocks.append("#### " + " ".join(l.strip() for l in lines))
+        else:
+            out_blocks.append(block)
+    return "\n\n".join(out_blocks)
+
+# Раздел «Ключевые идеи»: плашка раскрыта по умолчанию, маркеры вместо цифр
+KEY_IDEAS_RE = re.compile(r'ключев', re.IGNORECASE)
+
 def build_accordion_md(md_body: str) -> str:
     """
     Превращает Markdown-разделы в плоский аккордеон из <details>-плашек:
@@ -72,12 +99,32 @@ def build_accordion_md(md_body: str) -> str:
         content = "\n".join(lines).strip()
         if head is None:
             if content:
-                res.append(content)
+                res.append(_preamble_transform(content))
         elif content:
             # Заголовок плашки жирным, иначе он рендерится мельче основного текста
             head_clean = escape_html(strip_markdown(head))
-            res.append(f"<details><summary><b>{head_clean}</b></summary>\n\n{content}\n\n</details>")
+            if KEY_IDEAS_RE.search(head):
+                # Ключевые идеи: раскрыты по умолчанию, цифры → маркеры
+                content = re.sub(r'^(\s*)\d+[.)]\s+', r'\1- ', content, flags=re.MULTILINE)
+                res.append(f"<details open><summary><b>{head_clean}</b></summary>\n\n{content}\n\n</details>")
+            else:
+                content = _paragraphs_to_h4(content)
+                res.append(f"<details><summary><b>{head_clean}</b></summary>\n\n{content}\n\n</details>")
     return "\n\n".join(res)
+
+def _preamble_transform(content: str) -> str:
+    """
+    Преамбула (название + TL;DR): текстовые абзацы оформляем блок-цитатой,
+    заголовок и дивайдеры не трогаем.
+    """
+    out_blocks = []
+    for block in re.split(r'\n\s*\n', content):
+        lines = [l for l in block.splitlines() if l.strip()]
+        if lines and all(not re.match(r'^\s*([-*>|#]|\d+[.)]\s|```)', l) for l in lines):
+            out_blocks.append("> " + " ".join(l.strip() for l in lines))
+        else:
+            out_blocks.append(block)
+    return "\n\n".join(out_blocks)
 
 def build_post_from_document(content: str) -> str:
     """
@@ -96,7 +143,11 @@ def build_post_from_document(content: str) -> str:
                   flags=re.MULTILINE | re.IGNORECASE)
     # Вики-ссылки [[Имя]] не кликабельны в TG — показываем жирным
     body = re.sub(r'\[\[(?:[^\]|]*\|)?([^\]]+)\]\]', r'**\1**', body)
-    return build_accordion_md(body.strip())
+    # Дивайдеры до и после H1-названия (пустые строки обязательны,
+    # иначе --- под текстом превратится в setext-заголовок)
+    body = re.sub(r'^(#\s+.+)$', r'---\n\n\1\n\n---', body, count=1, flags=re.MULTILINE)
+    # Дивайдер в самом конце поста
+    return build_accordion_md(body.strip()) + "\n\n---"
 
 # Лимит rich-сообщения по Bot API 10.1 — 32768 символов; берём с запасом.
 RICH_MESSAGE_MAX_LEN = 30000
