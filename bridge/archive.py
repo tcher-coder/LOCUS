@@ -103,9 +103,15 @@ def archive_post(doc_rel_path: str, summary: str, bot_token: str, channel_id: st
         
         logger.info(f"Posting {filename} to archive channel {channel_id}")
         with open(abs_path, "rb") as f:
-            files = {"document": (filename, f)}
-            data = {"chat_id": channel_id, "caption": caption}
-            response = httpx.post(url, data=data, files=files, timeout=30)
+            content = f.read()
+        # UTF-8 BOM — иначе просмотрщик Telegram может не распознать кодировку
+        # и показать кириллицу «иероглифами». Файл в vault не меняем.
+        if filename.lower().endswith((".md", ".txt")) and not content.startswith(b"\xef\xbb\xbf"):
+            content = b"\xef\xbb\xbf" + content
+
+        files = {"document": (filename, content)}
+        data = {"chat_id": channel_id, "caption": caption}
+        response = httpx.post(url, data=data, files=files, timeout=30)
 
         if response.status_code == 200:
             logger.info("Successfully posted to archive channel.")
