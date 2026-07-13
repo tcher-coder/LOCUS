@@ -10,6 +10,10 @@ if [ ! -f "$VAULT/AGENTS.md" ]; then
     cp -rn /app/vault.template/. "$VAULT/"
 fi
 
+# AGENTS.md — конфигурация из репозитория (не данные): синхронизируем при каждом старте,
+# чтобы обновления правил стиля доезжали до живого vault без ручного вмешательства
+cp /app/vault.template/AGENTS.md "$VAULT/AGENTS.md"
+
 # Git-идентичность и репозиторий vault (коммит после каждого ingest)
 git config --global user.name  "LOCUS Agent"
 git config --global user.email "locus@local"
