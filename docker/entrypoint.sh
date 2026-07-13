@@ -21,5 +21,13 @@ if [ ! -d "$VAULT/.git" ]; then
     git -C "$VAULT" commit -qm "Initial vault" || true
 fi
 
-echo "[entrypoint] запускаю LOCUS bridge"
-exec python3 /app/bridge/main.py
+# Дать пользователю locus права на vault и data
+chown -R locus:locus "$VAULT" /app/data 2>/dev/null || true
+mkdir -p /app/data && chown locus:locus /app/data
+
+# Скопировать git config для пользователя locus
+cp /root/.gitconfig /home/locus/.gitconfig 2>/dev/null || true
+chown locus:locus /home/locus/.gitconfig 2>/dev/null || true
+
+echo "[entrypoint] запускаю LOCUS bridge (user=locus)"
+exec gosu locus python3 /app/bridge/main.py

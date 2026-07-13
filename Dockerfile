@@ -3,19 +3,24 @@ FROM node:22-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:$PATH" \
-    HOME=/root
+    PATH="/opt/venv/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-venv git ffmpeg ca-certificates curl \
+        python3 python3-pip python3-venv git ffmpeg ca-certificates curl gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Claude Code CLI (его спавнит Agent SDK)
 RUN npm install -g @anthropic-ai/claude-code
 
-# Глобальный скилл /watch (bradautomates/claude-video)
+# Непривилегированный пользователь (Agent SDK запрещает --dangerously-skip-permissions под root)
+RUN groupadd -r locus && useradd -r -g locus -m -d /home/locus -s /bin/bash locus
+
+# Глобальный скилл /watch (bradautomates/claude-video) — ставим от locus
+USER locus
+ENV HOME=/home/locus
 RUN npx -y skills add bradautomates/claude-video -g \
-    && echo "--- installed skills ---" && ls -R /root/.claude/skills 2>/dev/null || true
+    && echo "--- installed skills ---" && ls -R /home/locus/.claude/skills 2>/dev/null || true
+USER root
 
 WORKDIR /app
 COPY bridge/requirements.txt bridge/requirements.txt
