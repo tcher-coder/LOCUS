@@ -9,21 +9,6 @@ def escape_html(text: str) -> str:
     """Escapes HTML special characters."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-def convert_md_to_html_fallback(md_text: str) -> str:
-    """
-    Very simple Markdown to HTML converter for standard TG fallback message.
-    """
-    # Replace bold, italic, code
-    text = escape_html(md_text)
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'__(.*?)__', r'<b>\1</b>', text)
-    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
-    text = re.sub(r'_(.*?)_', r'<i>\1</i>', text)
-    text = re.sub(r'`(.*?)`', r'<code>\1</code>', text)
-    # Replace links
-    text = re.sub(r'\[(.*?)\]\((.*?)\)', r'<a href="\2">\1</a>', text)
-    return text
-
 def strip_markdown(text: str) -> str:
     """
     Убирает Markdown-разметку, оставляя чистый текст.
@@ -126,9 +111,12 @@ def _preamble_transform(content: str) -> str:
             out_blocks.append(block)
     return "\n\n".join(out_blocks)
 
-# Порог деления поста на части: клиент прячет длинные rich-посты за «Show more»
-# примерно после 8 000 символов — держим часть заметно короче.
-POST_PART_MAX_LEN = 7500
+# Порог деления поста на части — почти весь лимит rich-сообщения Bot API
+# (32 768): части режем как можно реже, только когда пост не влезает
+# в одно сообщение; блок, не влезающий целиком, уходит в следующую часть.
+# Чуть ниже RICH_MESSAGE_MAX_LEN, чтобы готовая часть с шапкой и финальным
+# дивайдером гарантированно не пересобиралась при отправке.
+POST_PART_MAX_LEN = 31500
 
 def _title_header(title: str, part_no: int = 0) -> str:
     """Шапка поста: дивайдеры до и после названия (капсом), опц. номер части."""
@@ -191,7 +179,7 @@ def build_post_from_document(content: str) -> str:
     return "\n\n".join(build_post_parts(content, max_len=10**9))
 
 # Лимит rich-сообщения по Bot API 10.1 — 32768 символов; берём с запасом.
-RICH_MESSAGE_MAX_LEN = 30000
+RICH_MESSAGE_MAX_LEN = 32000
 
 def split_markdown_chunks(md_text: str, max_len: int = RICH_MESSAGE_MAX_LEN) -> list:
     """
@@ -217,8 +205,9 @@ def split_markdown_chunks(md_text: str, max_len: int = RICH_MESSAGE_MAX_LEN) -> 
 
 def send_markdown_text(chat_id: int, bot_token: str, md_text: str, sent_ids: list = None) -> bool:
     """
-    Отправляет Markdown-текст в чат: rich-сообщениями, при неудаче — HTML-фолбэк.
-    Текст длиннее лимита rich-сообщения разбивается на несколько сообщений.
+    Отправляет Markdown-текст в чат rich-сообщениями (HTML-фолбэка нет —
+    решение владельца, 2026-07). Текст длиннее лимита rich-сообщения
+    разбивается на несколько сообщений по границам блоков.
     В sent_ids (если передан список) складываются message_id всех отправленных
     сообщений — для привязки реплай-сессий.
     """
@@ -229,14 +218,7 @@ def send_markdown_text(chat_id: int, bot_token: str, md_text: str, sent_ids: lis
             if sent_ids is not None and isinstance(mid, int):
                 sent_ids.append(mid)
         else:
-            # HTML-фолбэк ограничен 4096 символами — режем мельче
-            for sub in split_markdown_chunks(chunk, max_len=3800):
-                mid = send_html_message(chat_id, bot_token, convert_md_to_html_fallback(sub))
-                if mid:
-                    if sent_ids is not None and isinstance(mid, int):
-                        sent_ids.append(mid)
-                else:
-                    all_ok = False
+            all_ok = False
     return all_ok
 
 def send_rich_message(chat_id: int, bot_token: str, md_content: str) -> bool:
@@ -265,34 +247,6 @@ def send_rich_message(chat_id: int, bot_token: str, md_content: str) -> bool:
             return False
     except Exception as e:
         logger.error(f"Error in send_rich_message: {e}")
-        return False
-
-def send_html_message(chat_id: int, bot_token: str, text: str) -> bool:
-    """
-    Sends a standard Telegram message with HTML parsing.
-    Truncates text to 4096 characters.
-    """
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    # Truncate to 4096 characters safely
-    if len(text) > 4000:
-        text = text[:4000] + "\n\n<i>[Сообщение обрезано из-за ограничений Telegram...]</i>"
-
-    try:
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML"
-        }
-        logger.info(f"Sending standard HTML message to chat {chat_id}")
-        response = httpx.post(url, json=payload, timeout=20)
-        if response.status_code == 200:
-            try:
-                return response.json()["result"]["message_id"]
-            except Exception:
-                return True
-        return False
-    except Exception as e:
-        logger.error(f"Error in send_html_message: {e}")
         return False
 
 def send_document(chat_id: int, bot_token: str, file_path: str, caption: str = "") -> bool:

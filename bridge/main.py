@@ -12,13 +12,10 @@ from dotenv import load_dotenv
 # Import our helper modules
 from agent import run_locus_agent
 from telegram_out import (
-    send_rich_message,
-    send_html_message,
     send_document,
     send_markdown_text,
     strip_markdown,
     build_post_parts,
-    convert_md_to_html_fallback,
     escape_html
 )
 from archive import archive_post
@@ -720,11 +717,11 @@ async def process_task(task: dict):
         
         # Determine files to send
         if is_ask_only:
-            # Just send text response in HTML or RichMessage
-            success_sent = send_rich_message(chat_id, BOT_TOKEN, full_output)
-            if not success_sent:
-                html_fallback = convert_md_to_html_fallback(full_output)
-                send_html_message(chat_id, BOT_TOKEN, html_fallback)
+            # Текст ответа rich-сообщением (длинный — несколькими); фолбэка нет
+            if not send_markdown_text(chat_id, BOT_TOKEN, full_output):
+                await edit_status_message(chat_id, status_msg_id,
+                                          "❌ Не удалось отправить ответ rich-сообщением (см. логи).")
+                return
             # /lint modifies wiki files — commit them
             if is_lint:
                 commit_vault_changes("wiki/")
