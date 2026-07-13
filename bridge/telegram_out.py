@@ -74,7 +74,9 @@ def build_accordion_md(md_body: str) -> str:
             if content:
                 res.append(content)
         elif content:
-            res.append(f"<details><summary>{head}</summary>\n\n{content}\n\n</details>")
+            # Заголовок плашки жирным, иначе он рендерится мельче основного текста
+            head_clean = escape_html(strip_markdown(head))
+            res.append(f"<details><summary><b>{head_clean}</b></summary>\n\n{content}\n\n</details>")
     return "\n\n".join(res)
 
 def build_post_from_document(content: str) -> str:
@@ -94,6 +96,9 @@ def build_post_from_document(content: str) -> str:
                   flags=re.MULTILINE | re.IGNORECASE)
     # Вики-ссылки [[Имя]] не кликабельны в TG — показываем жирным
     body = re.sub(r'\[\[(?:[^\]|]*\|)?([^\]]+)\]\]', r'**\1**', body)
+    # H1-название рендерится слишком крупно относительно остального поста —
+    # показываем жирной строкой (не ##+, чтобы не стать плашкой аккордеона)
+    body = re.sub(r'^#\s+(.+)$', r'**\1**', body, flags=re.MULTILINE)
     return build_accordion_md(body.strip())
 
 # Лимит rich-сообщения по Bot API 10.1 — 32768 символов; берём с запасом.
