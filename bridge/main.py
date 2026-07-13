@@ -66,8 +66,32 @@ queue = asyncio.Queue()
 active_task = None
 tasks_processed_today = 0
 last_processed_date = date.today()
-# Reply map: bot_message_id -> session_id
-reply_session_map = {}
+# Reply map: bot_message_id -> session_id (persisted to disk)
+_DATA_DIR = os.getenv("LOCUS_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(_DATA_DIR, exist_ok=True)
+SESSION_MAP_FILE = os.path.join(_DATA_DIR, "session_map.json")
+
+import json as _json
+
+def _load_session_map() -> dict:
+    if os.path.exists(SESSION_MAP_FILE):
+        try:
+            with open(SESSION_MAP_FILE, "r", encoding="utf-8") as f:
+                raw = _json.load(f)
+            # Keys must be ints (message_id); JSON stores them as strings
+            return {int(k): v for k, v in raw.items()}
+        except Exception as e:
+            logger.error(f"Error loading session_map: {e}")
+    return {}
+
+def _save_session_map():
+    try:
+        with open(SESSION_MAP_FILE, "w", encoding="utf-8") as f:
+            _json.dump(reply_session_map, f, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error saving session_map: {e}")
+
+reply_session_map = _load_session_map()
 
 def get_token_info():
     """
@@ -320,6 +344,7 @@ async def process_task(task: dict):
 
     prompt = ""
     is_ask_only = False
+    is_lint = False
     
     if resume_id:
         # Standard follow-up
@@ -334,7 +359,8 @@ async def process_task(task: dict):
         prompt = template.replace("{{QUESTION}}", question)
     elif cmd_name == "/lint":
         is_ask_only = True
-        prompt = "Выполните ручную гигиену вики по AGENTS.md. Найдите дубликаты, битые ссылки, устаревшую информацию. Выведите отчёт."
+        is_lint = True
+        prompt = "Выполните ручную гигиену вики по AGENTS.md. Найдите дубликаты, битые ссылки, устаревшую информацию. Исправьте найденные проблемы и выведите отчёт."
     elif cmd_name == "/digest":
         # No agent needed! Reading log.md directly.
         log_path = os.path.join(VAULT_DIR, "wiki/log.md")
@@ -643,6 +669,7 @@ async def process_task(task: dict):
             # If sitemap confirmation, save to map
             if captured_session_id:
                 reply_session_map[status_msg_id] = captured_session_id
+                _save_session_map()
                 logger.info(f"Saved session ID {captured_session_id} for bot message {status_msg_id}")
             return
 
@@ -652,11 +679,13 @@ async def process_task(task: dict):
         # Determine files to send
         if is_ask_only:
             # Just send text response in HTML or RichMessage
-            # We don't commit or send files
             success_sent = send_rich_message(chat_id, BOT_TOKEN, full_output)
             if not success_sent:
                 html_fallback = convert_md_to_html_fallback(full_output)
                 send_html_message(chat_id, BOT_TOKEN, html_fallback)
+            # /lint modifies wiki files — commit them
+            if is_lint:
+                commit_vault_changes("wiki/")
             # Delete status message
             await send_tg_api("deleteMessage", {"chat_id": chat_id, "message_id": status_msg_id})
         else:
@@ -687,6 +716,7 @@ async def process_task(task: dict):
             # 5. Привязать сессию к статус-сообщению — реплай на него продолжит диалог с агентом
             if captured_session_id:
                 reply_session_map[status_msg_id] = captured_session_id
+                _save_session_map()
                 await edit_status_message(chat_id, status_msg_id,
                                           "✅ Готово. Ответь реплаем на это сообщение, чтобы продолжить сессию (уточнения, доработка).")
             else:

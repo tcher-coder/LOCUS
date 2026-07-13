@@ -137,19 +137,20 @@ def markdown_to_rich_message(md_text: str) -> dict:
             headers = [cell.strip() for cell in line.split("|")[1:-1]]
             i += 2  # Skip header and separator lines
             
-            rows = []
+            cells = []
             # Add header row
-            header_cells = [{"text": parse_inline_markdown(h)} for h in headers]
-            rows.append(header_cells)
+            header_cells = [{"text": parse_inline_markdown(h), "is_header": True} for h in headers]
+            cells.append(header_cells)
             
             while i < n and lines[i].strip().startswith("|"):
                 row_cells = [cell.strip() for cell in lines[i].split("|")[1:-1]]
-                rows.append([{"text": parse_inline_markdown(c)} for c in row_cells])
+                cells.append([{"text": parse_inline_markdown(c)} for c in row_cells])
                 i += 1
                 
             blocks.append({
                 "type": "table",
-                "rows": rows
+                "cells": cells,
+                "is_bordered": True
             })
             continue
             
@@ -166,25 +167,26 @@ def markdown_to_rich_message(md_text: str) -> dict:
                     else:
                         break
                 
-                list_match = re.match(r'^([-\*\+])\s+(.*)$', l)
-                num_match = re.match(r'^(\d+)\.\s+(.*)$', l)
+                list_match = re.match(r'^[-\*\+]\s+(.*)$', l)
+                num_match = re.match(r'^\d+\.\s+(.*)$', l)
                 
                 if list_match:
-                    list_items.append({"text": parse_inline_markdown(list_match.group(2))})
+                    list_items.append({"blocks": [{"type": "paragraph", "text": parse_inline_markdown(list_match.group(1))}]})
                     i += 1
                 elif num_match:
-                    list_items.append({"text": parse_inline_markdown(num_match.group(2))})
+                    list_items.append({"blocks": [{"type": "paragraph", "text": parse_inline_markdown(num_match.group(1))}]})
                     i += 1
                 else:
-                    # Append to previous item if it doesn't start with list marker
+                    # Continuation line — append to previous item's paragraph text
                     if list_items:
-                        prev_text = list_items[-1]["text"]
+                        prev_para = list_items[-1]["blocks"][0]
+                        prev_text = prev_para["text"]
                         if isinstance(prev_text, str):
-                            list_items[-1]["text"] = prev_text + "\n" + l
+                            prev_para["text"] = prev_text + " " + l
                         elif isinstance(prev_text, list):
-                            list_items[-1]["text"].append("\n" + l)
+                            prev_para["text"].append(" " + l)
                         else:
-                            list_items[-1]["text"] = [prev_text, "\n" + l]
+                            prev_para["text"] = [prev_text, " " + l]
                         i += 1
                     else:
                         break
