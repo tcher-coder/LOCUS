@@ -139,9 +139,10 @@ def _title_header(title: str, part_no: int = 0) -> str:
     suffix = f" — Ч.{part_no}" if part_no else ""
     return f"---\n\n# {title}{suffix}\n\n---"
 
-# Свайп-галерея кадров видео (+frames): не больше 5 скриншотов на пост —
-# больше уже не помогает разведке и раздувает multipart-заливку.
-GALLERY_MAX = 5
+# Свайп-галерея кадров видео (+frames): агент сам решает, сколько кадров
+# брать (1..10) — по реальной визуальной ценности материала, а не для галочки.
+# Верхняя граница нужна как страховка от раздувания multipart-заливки.
+GALLERY_MAX = 10
 
 def build_gallery_md(captions: list) -> str:
     """
