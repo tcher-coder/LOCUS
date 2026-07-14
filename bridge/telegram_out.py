@@ -50,8 +50,23 @@ def _paragraphs_to_h4(content: str) -> str:
             out_blocks.append(block)
     return "\n\n".join(out_blocks)
 
-# Раздел «Ключевые идеи»: плашка раскрыта по умолчанию, маркеры вместо цифр
+# Раздел «Ключевые идеи»: маркеры вместо цифр, своя иконка
 KEY_IDEAS_RE = re.compile(r'ключев', re.IGNORECASE)
+SOURCES_RE = re.compile(r'источник', re.IGNORECASE)
+
+def _summary_icon(head_clean: str) -> str:
+    """
+    Иконка для заголовка плашки. Тематические эмодзи ставит агент прямо
+    в заголовках разделов (правило стиля); здесь — только дефолты для
+    стандартных секций, если агент иконку не поставил.
+    """
+    if not re.match(r'[\w«"„(]', head_clean):
+        return ""  # уже начинается с эмодзи/символа
+    if KEY_IDEAS_RE.search(head_clean):
+        return "💡 "
+    if SOURCES_RE.search(head_clean):
+        return "🔗 "
+    return ""
 
 def build_accordion_blocks(md_body: str) -> list:
     """
@@ -93,7 +108,8 @@ def build_accordion_blocks(md_body: str) -> list:
                 content = re.sub(r'^(\s*)\d+[.)]\s+', r'\1- ', content, flags=re.MULTILINE)
             else:
                 content = _paragraphs_to_h4(content)
-            res.append(f"<details><summary><b>{head_clean}</b></summary>\n\n{content}\n\n</details>")
+            icon = _summary_icon(head_clean)
+            res.append(f"<details><summary><b>{icon}{head_clean}</b></summary>\n\n{content}\n\n</details>")
     return res
 
 def _preamble_transform(content: str) -> str:
@@ -131,13 +147,14 @@ def build_post_parts(content: str, max_len: int = POST_PART_MAX_LEN) -> list:
     ту же шапку с пометкой «— Ч.N». Возвращает список Markdown-постов.
     """
     body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', content, flags=re.DOTALL)
-    # Убираем раздел "Оглавление"/"Содержание" целиком
+    # Убираем раздел "Оглавление"/"Содержание" целиком ([^\w\s]* — допуск
+    # на тематическое эмодзи, которое агент ставит в заголовках)
     body = re.sub(
-        r'^#{1,4}\s*(Оглавление|Содержание)\b.*?(?=^#{1,4}\s|\Z)',
+        r'^#{1,4}\s*[^\w\s#]*\s*(Оглавление|Содержание)\b.*?(?=^#{1,4}\s|\Z)',
         '', body, flags=re.MULTILINE | re.DOTALL | re.IGNORECASE
     )
     # Заголовок TL;DR убираем, сам текст сути остаётся открытым сверху
-    body = re.sub(r'^#{1,4}\s*TL;?DR\s*:?\s*$\n?', '', body,
+    body = re.sub(r'^#{1,4}\s*[^\w\s#]*\s*TL;?DR\s*:?\s*$\n?', '', body,
                   flags=re.MULTILINE | re.IGNORECASE)
     # Вики-ссылки [[Имя]] не кликабельны в TG — показываем жирным
     body = re.sub(r'\[\[(?:[^\]|]*\|)?([^\]]+)\]\]', r'**\1**', body)
@@ -150,6 +167,10 @@ def build_post_parts(content: str, max_len: int = POST_PART_MAX_LEN) -> list:
         body = body[:m.start()] + body[m.end():]
 
     blocks = build_accordion_blocks(body.strip())
+
+    # Дивайдер между преамбулой (TL;DR) и аккордеоном: явная граница «суть/детали»
+    if len(blocks) > 1 and not blocks[0].startswith("<details"):
+        blocks.insert(1, "---")
 
     # Группируем блоки в части: плашки не режем, преамбула — всегда в первой
     groups, current, current_len = [], [], 0
