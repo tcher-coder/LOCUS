@@ -197,31 +197,45 @@ def build_digest_from_file(file_path: str):
         logger.error(f"Error building digest from {file_path}: {e}")
         return [], []
 
-def cleanup_old_gallery_dirs(max_age_days: int = 7):
+def _cleanup_old_subdirs(root: str, max_age_days: float, label: str):
     """
-    Чистит подкаталоги <DATA_DIR>/gallery/* старше max_age_days. Кадры нужны
-    только на момент отправки первой части поста — дальше галерея живёт в
-    Telegram как file_id, а локальные JPEG на диске просто занимают место.
-    Не падает, если каталога gallery ещё нет (+frames ни разу не запускали).
+    Общая логика: удаляет подкаталоги root старше max_age_days. Не падает,
+    если root ещё не существует (соответствующий флаг ни разу не запускали).
     """
-    gallery_root = os.path.join(_DATA_DIR, "gallery")
-    if not os.path.isdir(gallery_root):
+    if not os.path.isdir(root):
         return
     cutoff_sec = max_age_days * 86400
     now = datetime.now().timestamp()
     try:
-        for name in os.listdir(gallery_root):
-            sub_path = os.path.join(gallery_root, name)
+        for name in os.listdir(root):
+            sub_path = os.path.join(root, name)
             if not os.path.isdir(sub_path):
                 continue
             try:
                 if now - os.path.getmtime(sub_path) > cutoff_sec:
                     shutil.rmtree(sub_path, ignore_errors=True)
-                    logger.info(f"Gallery cleanup: удалён устаревший каталог {sub_path}")
+                    logger.info(f"{label} cleanup: удалён устаревший каталог {sub_path}")
             except Exception as e:
-                logger.warning(f"Gallery cleanup: ошибка на {sub_path}: {e}")
+                logger.warning(f"{label} cleanup: ошибка на {sub_path}: {e}")
     except Exception as e:
-        logger.warning(f"Gallery cleanup: не удалось перечислить {gallery_root}: {e}")
+        logger.warning(f"{label} cleanup: не удалось перечислить {root}: {e}")
+
+def cleanup_old_media_dirs():
+    """
+    Чистит устаревшие рабочие каталоги в <DATA_DIR>/gallery и <DATA_DIR>/frames.
+
+    gallery/<slug> (TTL 7 дней): кадры нужны только на момент отправки первой
+    части поста — дальше галерея живёт в Telegram как file_id, а локальные
+    JPEG на диске просто занимают место.
+
+    frames/<slug> (TTL 1 день): сырые ~50 кадров + скачанное видео (десятки МБ)
+    — это чисто временный рабочий мусор одной ingest-сессии. Агент должен сам
+    удалять его после отбора 5 кадров в галерею (см. prompts/ingest_video.md),
+    но если сессия упала на середине (например ушла в фон и не вернулась),
+    каталог остаётся навсегда — короткий TTL страхует от накопления мусора.
+    """
+    _cleanup_old_subdirs(os.path.join(_DATA_DIR, "gallery"), max_age_days=7, label="Gallery")
+    _cleanup_old_subdirs(os.path.join(_DATA_DIR, "frames"), max_age_days=1, label="Frames")
 
 async def handle_callback_query(cq: dict):
     cq_id = cq["id"]
@@ -665,7 +679,7 @@ async def process_task(task: dict):
 
     else:
         # Ingest flow (Article / Video / Text)
-        cleanup_old_gallery_dirs()
+        cleanup_old_media_dirs()
         urls = re.findall(r'(https?://\S+)', text_clean)
         
         if urls:
