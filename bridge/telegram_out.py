@@ -281,21 +281,55 @@ def send_markdown_text(chat_id: int, bot_token: str, md_text: str, sent_ids: lis
             all_ok = False
     return all_ok
 
-def _collect_photo_sizes(node, out: dict):
+def _largest_photo_size(photo_node) -> dict:
     """
-    Рекурсивно обходит произвольный JSON-ответ Bot API и собирает file_id фото.
-    PhotoSize приходит массивом размеров одного и того же снимка — группируем
-    по file_unique_id и берём вариант с максимальным file_size (или площадью,
-    если file_size не пришёл). Порядок словаря = порядок появления в ответе,
-    что на практике совпадает с порядком shot1..shotN в галерее.
+    Внутри ОДНОГО блока type:"photo" рекурсивно находит все объекты-размеры
+    (PhotoSize — есть file_id/file_unique_id/width/height) и возвращает
+    крупнейший (по file_size, а если его нет — по width*height).
+    """
+    sizes = []
+
+    def collect(n):
+        if isinstance(n, dict):
+            if "file_id" in n and "width" in n and "height" in n:
+                sizes.append(n)
+            for v in n.values():
+                collect(v)
+        elif isinstance(n, list):
+            for v in n:
+                collect(v)
+
+    collect(photo_node)
+    if not sizes:
+        return {}
+    return max(sizes, key=lambda s: s.get("file_size", s.get("width", 0) * s.get("height", 0)))
+
+def _collect_photo_sizes(node, out: list):
+    """
+    Рекурсивно обходит произвольный JSON-ответ Bot API и собирает file_id фото
+    слайд-шоу, по одному на КАЖДЫЙ блок {"type": "photo"}, в порядке появления
+    этих блоков (это и есть порядок shot1..shotN в галерее).
+
+    ГРАБЛИ (уже наступали на проде, повтор даёт дубликаты в канале): у Telegram
+    каждое фото приходит МАССИВОМ PhotoSize, и у КАЖДОГО размера свой
+    собственный file_id И свой собственный file_unique_id — они не общие для
+    всех размеров одной картинки. Поэтому группировать по file_unique_id
+    НЕЛЬЗЯ: так каждый размер считается отдельным "фото", и список получается
+    длиннее реального числа кадров с перекосом (все размеры фото №1, потом все
+    размеры фото №2, ...). extract_gallery_file_ids(...)[:len(gallery)] тогда
+    отрезает первые N элементов этого перекошенного списка — то есть все
+    размеры первых одной-двух картинок — и в канал улетают дубликаты.
+    Правильная единица фото — это сам блок type:"photo" из слайд-шоу; внутри
+    него нужно взять один, самый крупный размер (см. _largest_photo_size).
     """
     if isinstance(node, dict):
-        if "file_id" in node and "width" in node and "height" in node:
-            fuid = node.get("file_unique_id", node["file_id"])
-            score = node.get("file_size", node.get("width", 0) * node.get("height", 0))
-            prev = out.get(fuid)
-            if prev is None or score > prev[1]:
-                out[fuid] = (node["file_id"], score)
+        if node.get("type") == "photo":
+            big = _largest_photo_size(node)
+            if big:
+                out.append(big["file_id"])
+            # Внутрь уже отправленного фото-блока не спускаемся — иначе
+            # найдём его же PhotoSize ещё раз через общий обход.
+            return
         for v in node.values():
             _collect_photo_sizes(v, out)
     elif isinstance(node, list):
@@ -303,10 +337,11 @@ def _collect_photo_sizes(node, out: dict):
             _collect_photo_sizes(v, out)
 
 def extract_gallery_file_ids(response_json: dict) -> list:
-    """file_id всех фото из ответа sendRichMessage, в порядке появления."""
-    out = {}
+    """file_id всех фото слайд-шоу из ответа sendRichMessage, по одному на
+    фото (не на PhotoSize!), в порядке появления фото-блоков."""
+    out = []
     _collect_photo_sizes(response_json, out)
-    return [fid for fid, _score in out.values()]
+    return out
 
 def send_rich_message(chat_id: int, bot_token: str, md_content: str,
                        gallery: list = None, out_file_ids: list = None):
@@ -371,7 +406,16 @@ def send_rich_message(chat_id: int, bot_token: str, md_content: str,
             try:
                 body = response.json()
                 if out_file_ids is not None and gallery:
-                    out_file_ids.extend(extract_gallery_file_ids(body)[:len(gallery)])
+                    found = extract_gallery_file_ids(body)
+                    if len(found) != len(gallery):
+                        logger.warning(
+                            f"extract_gallery_file_ids: нашли {len(found)} фото-блоков, "
+                            f"а отправляли {len(gallery)} — Bot API вернул не то, что ожидалось. "
+                            f"Срез [:len(gallery)] — не более чем страховка от IndexError."
+                        )
+                    # Срез — страховка на случай расхождения количества (см. warning выше),
+                    # а не часть нормальной логики: в норме len(found) == len(gallery).
+                    out_file_ids.extend(found[:len(gallery)])
                 # message_id — истинное значение; True как фолбэк, если тела нет
                 return body["result"]["message_id"]
             except Exception:

@@ -84,11 +84,23 @@ def archive_post(doc_rel_path: str, bot_token: str, channel_id: str, vault_dir: 
         if gallery_file_ids:
             meta = parse_yaml_front_matter(abs_path)
             raw_items = meta.get("gallery") or []
-            gallery_captions = []
-            for i in range(len(gallery_file_ids)):
-                item = raw_items[i] if i < len(raw_items) and isinstance(raw_items[i], dict) else {}
-                gallery_captions.append(item.get("caption") or "")
-            gallery = [{"id": f"shot{i + 1}", "file_id": fid} for i, fid in enumerate(gallery_file_ids)]
+            expected = len(raw_items)
+            if expected and len(gallery_file_ids) < expected:
+                # Кадров получили меньше, чем ожидалось по front-matter — значит
+                # где-то раньше в цепочке (см. telegram_out.extract_gallery_file_ids)
+                # часть file_id потерялась/не совпала. Лучше отправить пост совсем
+                # без свайп-галереи, чем с неполным/перекошенным набором кадров.
+                logger.warning(
+                    f"archive_post: gallery_file_ids короче ожидаемого "
+                    f"({len(gallery_file_ids)} из {expected} по front-matter) для {doc_rel_path} — "
+                    f"публикую пост БЕЗ галереи."
+                )
+            else:
+                gallery_captions = []
+                for i in range(len(gallery_file_ids)):
+                    item = raw_items[i] if i < len(raw_items) and isinstance(raw_items[i], dict) else {}
+                    gallery_captions.append(item.get("caption") or "")
+                gallery = [{"id": f"shot{i + 1}", "file_id": fid} for i, fid in enumerate(gallery_file_ids)]
 
         post_parts = build_channel_post(abs_path, gallery_captions=gallery_captions)
         filename = os.path.basename(doc_rel_path)
