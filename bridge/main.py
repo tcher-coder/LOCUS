@@ -399,6 +399,44 @@ async def edit_status_message(chat_id: int, message_id: int, text: str):
     }
     await send_tg_api("editMessageText", payload)
 
+# Все флаги сообщения и их короткие алиасы в одном месте, чтобы не рассинхронивать
+# is_deep/frames_enabled и текстовую справку пользователю.
+# Порядок внутри regex важен: длинные варианты (+deep, +frames) идут раньше коротких
+# (+d, +f), иначе при альтернации "+f" мог бы откусить префикс от "+frames" раньше,
+# чем движок дойдёт до полного слова.
+FLAG_ALIASES = {
+    "deep": ("deep", "d"),
+    "frames": ("frames", "f"),
+}
+_FLAG_PATTERN = re.compile(
+    r'(?<!\S)\+(' + "|".join(
+        alias for aliases in FLAG_ALIASES.values() for alias in sorted(aliases, key=len, reverse=True)
+    ) + r')(?!\S)',
+    re.IGNORECASE,
+)
+_ALIAS_TO_FLAG = {alias: flag for flag, aliases in FLAG_ALIASES.items() for alias in aliases}
+
+
+def parse_flags(text: str) -> tuple[set, str]:
+    """Разбирает флаги вида +deep/+d, +frames/+f из текста сообщения.
+
+    Флаг распознаётся только как отдельный токен (границы — пробел или начало/конец
+    строки), поэтому "+deep" внутри URL или слова не сработает. Регистронезависимо
+    (+D, +Frames тоже считаются). Возвращает (набор_канонических_флагов, текст_без_флагов),
+    вырезая распознанные флаги из текста один раз — дальше по коду повторных
+    .replace(...) для флагов быть не должно.
+    """
+    found = set()
+
+    def _consume(m: "re.Match") -> str:
+        found.add(_ALIAS_TO_FLAG[m.group(1).lower()])
+        return ""
+
+    text_clean = _FLAG_PATTERN.sub(_consume, text)
+    # Схлопываем пробелы, оставшиеся после вырезания флагов
+    text_clean = re.sub(r'\s+', ' ', text_clean).strip()
+    return found, text_clean
+
 async def process_task(task: dict):
     global tasks_processed_today, last_processed_date
     
@@ -427,10 +465,13 @@ async def process_task(task: dict):
     is_command = text.startswith("/")
     cmd_name = text.split()[0].lower() if is_command else ""
     
-    # Extract flags
-    is_deep = "+deep" in text
-    text_clean = text.replace("+deep", "").strip()
-    
+    # Extract flags — единая точка разбора: и +deep/+d, и +frames/+f вырезаются
+    # здесь разом, чтобы дальше по коду (в т.ч. в ветке видео) не было повторного
+    # .replace(...) и риска рассинхронить длинную/короткую форму флага.
+    flags, text_clean = parse_flags(text)
+    is_deep = "deep" in flags
+    frames_flag_set = "frames" in flags
+
     effort = "medium" if is_deep else "low"
     
     # Handle Dialog resume
@@ -660,7 +701,8 @@ async def process_task(task: dict):
             "🤖 <b>LOCUS</b> — агент «ссылка → знание».\n\n"
             "Пришли <b>ссылку</b> (статья/видео) или <b>текст</b> — получишь конспект, "
             "база знаний обновится автоматически.\n"
-            "Флаги: <code>+deep</code> (глубокий анализ), <code>+frames</code> (кадры видео).\n\n"
+            "Флаги: <code>+deep</code> / <code>+d</code> (глубокий анализ), "
+            "<code>+frames</code> / <code>+f</code> (кадры видео, свайп-галерея).\n\n"
             "<b>Команды:</b>\n"
             "/ask &lt;вопрос&gt; — вопрос к базе знаний\n"
             "/digest — последние изменения вики\n"
@@ -690,8 +732,9 @@ async def process_task(task: dict):
             
             if is_video:
                 template = read_prompt_template("ingest_video.md")
-                frames_enabled = "True" if "+frames" in text else "False"
-                instructions = instructions.replace("+frames", "").strip()
+                # +frames/+f уже вырезан из text_clean/instructions в parse_flags() выше —
+                # повторного .replace("+frames", ...) тут больше не нужно.
+                frames_enabled = "True" if frames_flag_set else "False"
                 prompt = template.replace("{{URL}}", url).replace("{{FRAMES_ENABLED}}", frames_enabled).replace("{{INSTRUCTIONS}}", instructions or "none")
             else:
                 template = read_prompt_template("ingest_article.md")
