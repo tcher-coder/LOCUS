@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import httpx
 import logging
 
@@ -138,13 +139,35 @@ def _title_header(title: str, part_no: int = 0) -> str:
     suffix = f" — Ч.{part_no}" if part_no else ""
     return f"---\n\n# {title}{suffix}\n\n---"
 
-def build_post_parts(content: str, max_len: int = POST_PART_MAX_LEN) -> list:
+# Свайп-галерея кадров видео (+frames): не больше 5 скриншотов на пост —
+# больше уже не помогает разведке и раздувает multipart-заливку.
+GALLERY_MAX = 5
+
+def build_gallery_md(captions: list) -> str:
+    """
+    Блок свайп-галереи <tg-slideshow> с shot1..shotN. Пустая строка сразу после
+    открывающего тега и перед закрывающим — обязательна, без неё Telegram не
+    распознаёт слайд-шоу (проверено смоук-тестом на проде). Кавычки в подписи
+    экранируем заменой на одинарные — двойная кавычка сломала бы title-атрибут.
+    """
+    lines = ["<tg-slideshow>", ""]
+    for i, caption in enumerate(captions, 1):
+        safe_caption = (caption or "").replace('"', "'")
+        lines.append(f'![](tg://photo?id=shot{i} "{safe_caption}")')
+    lines.append("")
+    lines.append("</tg-slideshow>")
+    return "\n".join(lines)
+
+def build_post_parts(content: str, max_len: int = POST_PART_MAX_LEN, gallery_captions: list = None) -> list:
     """
     Из содержимого raw-конспекта (с front-matter) готовит Telegram-пост:
     шапка с названием капсом в дивайдерах, суть цитатой (TL;DR без ярлыка),
     ниже — разделы аккордеоном, дивайдер в конце.
     Длинный пост делится на части по границам плашек: каждая часть получает
     ту же шапку с пометкой «— Ч.N». Возвращает список Markdown-постов.
+    Если передан gallery_captions — свайп-галерея встаёт САМЫМ первым блоком
+    parts[0], ДО шапки с названием (только в первую часть — в «Ч.2» кадрам
+    делать нечего, они уже показаны).
     """
     body = re.sub(r'^---\s*\n.*?\n---\s*\n', '', content, flags=re.DOTALL)
     # Убираем раздел "Оглавление"/"Содержание" целиком ([^\w\s]* — допуск
@@ -172,11 +195,19 @@ def build_post_parts(content: str, max_len: int = POST_PART_MAX_LEN) -> list:
     if len(blocks) > 1 and not blocks[0].startswith("<details"):
         blocks.insert(1, "---")
 
+    # Блок галереи считаем заранее — его длину нужно вычесть из бюджета
+    # только первой группы (галерея уходит исключительно в parts[0]).
+    gallery_md = build_gallery_md(gallery_captions) if gallery_captions else ""
+    gallery_budget = len(gallery_md) + 2 if gallery_md else 0  # +2 на "\n\n" перед шапкой
+
     # Группируем блоки в части: плашки не режем, преамбула — всегда в первой
     groups, current, current_len = [], [], 0
     header_len = len(_title_header(title, 9))
     for block in blocks:
-        if current and current_len + len(block) > max_len - header_len:
+        # Запас под галерею действует, пока копим самую первую группу
+        # (groups ещё пуст) — остальные части галереи не несут.
+        extra = gallery_budget if not groups else 0
+        if current and current_len + len(block) > max_len - header_len - extra:
             groups.append(current)
             current, current_len = [], 0
         current.append(block)
@@ -191,6 +222,8 @@ def build_post_parts(content: str, max_len: int = POST_PART_MAX_LEN) -> list:
     for i, group in enumerate(groups, 1):
         header = _title_header(title, i if multi else 0) if title else ""
         chunk = "\n\n".join([header] + group if header else group)
+        if i == 1 and gallery_md:
+            chunk = gallery_md + "\n\n" + chunk
         parts.append(chunk + "\n\n---")
     return parts
 
@@ -223,17 +256,23 @@ def split_markdown_chunks(md_text: str, max_len: int = RICH_MESSAGE_MAX_LEN) -> 
         chunks.append(current)
     return chunks
 
-def send_markdown_text(chat_id: int, bot_token: str, md_text: str, sent_ids: list = None) -> bool:
+def send_markdown_text(chat_id: int, bot_token: str, md_text: str, sent_ids: list = None,
+                        gallery: list = None, out_file_ids: list = None) -> bool:
     """
     Отправляет Markdown-текст в чат rich-сообщениями (HTML-фолбэка нет —
     решение владельца, 2026-07). Текст длиннее лимита rich-сообщения
     разбивается на несколько сообщений по границам блоков.
     В sent_ids (если передан список) складываются message_id всех отправленных
     сообщений — для привязки реплай-сессий.
+    gallery применяется ТОЛЬКО к первому чанку — сама галерея (build_post_parts)
+    уже вшита в его markdown, здесь просто нужно приложить файлы/file_id к тому
+    же HTTP-запросу; во второй и последующие чанки её передавать не нужно.
     """
     all_ok = True
-    for chunk in split_markdown_chunks(md_text):
-        mid = send_rich_message(chat_id, bot_token, chunk)
+    for i, chunk in enumerate(split_markdown_chunks(md_text)):
+        chunk_gallery = gallery if (gallery and i == 0) else None
+        chunk_out_ids = out_file_ids if i == 0 else None
+        mid = send_rich_message(chat_id, bot_token, chunk, gallery=chunk_gallery, out_file_ids=chunk_out_ids)
         if mid:
             if sent_ids is not None and isinstance(mid, int):
                 sent_ids.append(mid)
@@ -241,25 +280,99 @@ def send_markdown_text(chat_id: int, bot_token: str, md_text: str, sent_ids: lis
             all_ok = False
     return all_ok
 
-def send_rich_message(chat_id: int, bot_token: str, md_content: str) -> bool:
+def _collect_photo_sizes(node, out: dict):
+    """
+    Рекурсивно обходит произвольный JSON-ответ Bot API и собирает file_id фото.
+    PhotoSize приходит массивом размеров одного и того же снимка — группируем
+    по file_unique_id и берём вариант с максимальным file_size (или площадью,
+    если file_size не пришёл). Порядок словаря = порядок появления в ответе,
+    что на практике совпадает с порядком shot1..shotN в галерее.
+    """
+    if isinstance(node, dict):
+        if "file_id" in node and "width" in node and "height" in node:
+            fuid = node.get("file_unique_id", node["file_id"])
+            score = node.get("file_size", node.get("width", 0) * node.get("height", 0))
+            prev = out.get(fuid)
+            if prev is None or score > prev[1]:
+                out[fuid] = (node["file_id"], score)
+        for v in node.values():
+            _collect_photo_sizes(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _collect_photo_sizes(v, out)
+
+def extract_gallery_file_ids(response_json: dict) -> list:
+    """file_id всех фото из ответа sendRichMessage, в порядке появления."""
+    out = {}
+    _collect_photo_sizes(response_json, out)
+    return [fid for fid, _score in out.values()]
+
+def send_rich_message(chat_id: int, bot_token: str, md_content: str,
+                       gallery: list = None, out_file_ids: list = None):
     """
     Sends a Rich Message to Telegram Bot API 10.1 using raw HTTP.
     InputRichMessage принимает Markdown-строку напрямую (поле `markdown`) —
     Telegram сам парсит заголовки, списки, таблицы, цитаты и код.
+
+    gallery — список dict вида {"id": "shot1", "path": "/abs/x.jpg"} (локальный
+    файл — уйдёт multipart с attach://) или {"id": "shot1", "file_id": "AgAC…"}
+    (переиспользование уже загруженного фото — чистый JSON, без повторной
+    заливки). Если в списке есть хоть один элемент с "path" — весь запрос идёт
+    multipart (Bot API не умеет мешать attach:// с обычными полями в JSON).
+    Если gallery пуст/None — путь ровно как раньше, чистый JSON (99% сообщений:
+    статусы, /ask, посты без кадров) — не трогаем, чтобы не сломать.
+    out_file_ids (если передан список) получит file_id отправленных фото —
+    порядок соответствует shot1..shotN, пригодится, чтобы канал не перезаливал
+    те же кадры повторно.
     """
     url = f"https://api.telegram.org/bot{bot_token}/sendRichMessage"
+    has_local = bool(gallery) and any("path" in g for g in gallery)
     try:
-        payload = {
-            "chat_id": chat_id,
-            "rich_message": {"markdown": md_content}
-        }
-        logger.info(f"Sending rich message to chat {chat_id}")
-        response = httpx.post(url, json=payload, timeout=20)
+        if not gallery:
+            payload = {
+                "chat_id": chat_id,
+                "rich_message": {"markdown": md_content}
+            }
+            logger.info(f"Sending rich message to chat {chat_id}")
+            response = httpx.post(url, json=payload, timeout=20)
+        elif has_local:
+            media = [
+                {"id": g["id"], "media": {"type": "photo", "media": f"attach://{g['id']}"}}
+                for g in gallery
+            ]
+            rich_obj = {"markdown": md_content, "media": media}
+            # multipart: rich_message едет строкой (JSON внутри form-data), картинки — отдельными частями
+            data = {"chat_id": chat_id, "rich_message": json.dumps(rich_obj, ensure_ascii=False)}
+            files = {}
+            opened = []
+            try:
+                for g in gallery:
+                    f = open(g["path"], "rb")
+                    opened.append(f)
+                    files[g["id"]] = (os.path.basename(g["path"]), f, "image/jpeg")
+                logger.info(f"Sending rich message with gallery ({len(gallery)} local photo(s)) to chat {chat_id}")
+                response = httpx.post(url, data=data, files=files, timeout=60)
+            finally:
+                for f in opened:
+                    f.close()
+        else:
+            media = [
+                {"id": g["id"], "media": {"type": "photo", "media": g["file_id"]}}
+                for g in gallery
+            ]
+            rich_obj = {"markdown": md_content, "media": media}
+            payload = {"chat_id": chat_id, "rich_message": rich_obj}
+            logger.info(f"Sending rich message with gallery ({len(gallery)} reused file_id) to chat {chat_id}")
+            response = httpx.post(url, json=payload, timeout=20)
+
         if response.status_code == 200:
             logger.info("Rich message sent successfully.")
-            # message_id — истинное значение; True как фолбэк, если тела нет
             try:
-                return response.json()["result"]["message_id"]
+                body = response.json()
+                if out_file_ids is not None and gallery:
+                    out_file_ids.extend(extract_gallery_file_ids(body)[:len(gallery)])
+                # message_id — истинное значение; True как фолбэк, если тела нет
+                return body["result"]["message_id"]
             except Exception:
                 return True
         else:

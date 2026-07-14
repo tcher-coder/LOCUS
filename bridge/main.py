@@ -3,6 +3,7 @@ import sys
 import re
 import yaml
 import httpx
+import shutil
 import asyncio
 import logging
 import subprocess
@@ -16,7 +17,8 @@ from telegram_out import (
     send_markdown_text,
     strip_markdown,
     build_post_parts,
-    escape_html
+    escape_html,
+    GALLERY_MAX
 )
 from archive import archive_post
 
@@ -145,21 +147,81 @@ def extract_tldr_from_file(file_path: str) -> str:
         logger.error(f"Error extracting TL;DR: {e}")
     return "Архивный документ"
 
-def build_digest_from_file(file_path: str) -> list:
+def extract_gallery_from_file(file_path: str) -> list:
+    """
+    Достаёт галерею кадров видео из front-matter конспекта (поле `gallery:`
+    со списком {path, caption}, пишет /watch-скилл при +frames). Путь в
+    front-matter — относительный (см. prompts/ingest_video.md), резолвим
+    относительно _DATA_DIR (в проде LOCUS_DATA_DIR=/app/data). Несуществующие
+    файлы отбрасываем молча (могли не докопироваться/уже почищены), список
+    обрезаем до GALLERY_MAX.
+    """
+    meta = parse_yaml_front_matter(file_path)
+    raw_items = meta.get("gallery")
+    if not isinstance(raw_items, list):
+        return []
+    result = []
+    for item in raw_items:
+        if len(result) >= GALLERY_MAX:
+            break
+        if not isinstance(item, dict) or not item.get("path"):
+            continue
+        abs_path = os.path.join(_DATA_DIR, item["path"])
+        if not os.path.exists(abs_path):
+            logger.warning(f"Gallery: файл кадра не найден, пропускаю: {abs_path}")
+            continue
+        result.append({
+            "id": f"shot{len(result) + 1}",
+            "path": abs_path,
+            "caption": item.get("caption") or "",
+        })
+    return result
+
+def build_digest_from_file(file_path: str):
     """
     Готовит пост-выжимку для чата бота: суть сверху, разделы аккордеоном
     (<details>-плашки вместо оглавления). Длинные выжимки делятся на части
-    «— Ч.N»; возвращает список Markdown-постов.
+    «— Ч.N». Если в front-matter есть `gallery` (кадры видео, флаг +frames) —
+    свайп-галерея встаёт первым блоком в первую часть.
+    Возвращает (parts: list[str], gallery: list[dict]) — пустые списки при ошибке.
     """
     if not os.path.exists(file_path):
-        return []
+        return [], []
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-        return build_post_parts(content)
+        gallery = extract_gallery_from_file(file_path)
+        captions = [g["caption"] for g in gallery] if gallery else None
+        return build_post_parts(content, gallery_captions=captions), gallery
     except Exception as e:
         logger.error(f"Error building digest from {file_path}: {e}")
-        return []
+        return [], []
+
+def cleanup_old_gallery_dirs(max_age_days: int = 7):
+    """
+    Чистит подкаталоги <DATA_DIR>/gallery/* старше max_age_days. Кадры нужны
+    только на момент отправки первой части поста — дальше галерея живёт в
+    Telegram как file_id, а локальные JPEG на диске просто занимают место.
+    Не падает, если каталога gallery ещё нет (+frames ни разу не запускали).
+    """
+    gallery_root = os.path.join(_DATA_DIR, "gallery")
+    if not os.path.isdir(gallery_root):
+        return
+    cutoff_sec = max_age_days * 86400
+    now = datetime.now().timestamp()
+    try:
+        for name in os.listdir(gallery_root):
+            sub_path = os.path.join(gallery_root, name)
+            if not os.path.isdir(sub_path):
+                continue
+            try:
+                if now - os.path.getmtime(sub_path) > cutoff_sec:
+                    shutil.rmtree(sub_path, ignore_errors=True)
+                    logger.info(f"Gallery cleanup: удалён устаревший каталог {sub_path}")
+            except Exception as e:
+                logger.warning(f"Gallery cleanup: ошибка на {sub_path}: {e}")
+    except Exception as e:
+        logger.warning(f"Gallery cleanup: не удалось перечислить {gallery_root}: {e}")
 
 async def handle_callback_query(cq: dict):
     cq_id = cq["id"]
@@ -603,6 +665,7 @@ async def process_task(task: dict):
 
     else:
         # Ingest flow (Article / Video / Text)
+        cleanup_old_gallery_dirs()
         urls = re.findall(r'(https?://\S+)', text_clean)
         
         if urls:
@@ -733,20 +796,30 @@ async def process_task(task: dict):
 
             # 1. Выжимка текстом прямо в чат (без файла), длинная — частями «Ч.N».
             #    message_id частей собираем: реплай на любую часть продолжит сессию.
-            digest_parts = build_digest_from_file(doc_abs_path)
+            #    Если есть галерея кадров (+frames) — она едет ТОЛЬКО с первой частью,
+            #    file_id отправленных фото копим в gallery_file_ids, чтобы архивный
+            #    канал ниже не перезаливал те же картинки повторно.
+            digest_parts, gallery = build_digest_from_file(doc_abs_path)
             digest_msg_ids = []
+            gallery_file_ids = []
             if digest_parts:
-                for part in digest_parts:
-                    send_markdown_text(chat_id, BOT_TOKEN, part, sent_ids=digest_msg_ids)
+                for idx, part in enumerate(digest_parts):
+                    if idx == 0 and gallery:
+                        send_markdown_text(chat_id, BOT_TOKEN, part, sent_ids=digest_msg_ids,
+                                          gallery=gallery, out_file_ids=gallery_file_ids)
+                    else:
+                        send_markdown_text(chat_id, BOT_TOKEN, part, sent_ids=digest_msg_ids)
             else:
                 # Фолбэк: если выжимку не удалось подготовить — отправляем файл
                 send_document(chat_id, BOT_TOKEN, doc_abs_path, caption=f"📄 {os.path.basename(result_val)}")
 
             # 2. Архивный канал: rich-пост с выжимкой и хэштегами (файлы .md
-            #    боты Telegram отдают с кривым MIME — читать их в TG нельзя)
+            #    боты Telegram отдают с кривым MIME — читать их в TG нельзя).
+            #    Кадры галереи уже загружены выше — передаём file_id, чтобы не грузить их второй раз.
             if ARCHIVE_CHANNEL_ID:
                 try:
-                    archive_post(result_val, BOT_TOKEN, ARCHIVE_CHANNEL_ID, VAULT_DIR)
+                    archive_post(result_val, BOT_TOKEN, ARCHIVE_CHANNEL_ID, VAULT_DIR,
+                                gallery_file_ids=gallery_file_ids or None)
                 except Exception as ae:
                     logger.error(f"Error posting to archive channel: {ae}")
 
