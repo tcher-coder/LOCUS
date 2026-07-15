@@ -27,30 +27,6 @@ def strip_markdown(text: str) -> str:
     t = re.sub(r'^\s*>\s?', '', t, flags=re.MULTILINE)
     return t.strip()
 
-def _paragraphs_to_h4(content: str) -> str:
-    """
-    ЭКСПЕРИМЕНТ: обычные текстовые абзацы рендерим H4-заголовком (####) —
-    у rich-сообщений тело крупнее обычного, H4 визуально ближе к норме.
-    Списки, таблицы, цитаты, код и готовые заголовки не трогаем.
-    Вызывается ПОСЛЕ разбиения на секции, чтобы #### не стали плашками.
-    """
-    out_blocks = []
-    in_fence = False
-    for block in re.split(r'\n\s*\n', content):
-        lines = [l for l in block.splitlines() if l.strip()]
-        has_fence = any(l.strip().startswith("```") for l in lines)
-        is_plain = (
-            not in_fence and not has_fence and lines
-            and all(not re.match(r'^\s*([-*>|#+]|\d+[.)]\s|```)', l) for l in lines)
-        )
-        if has_fence and len([l for l in lines if l.strip().startswith("```")]) % 2 == 1:
-            in_fence = not in_fence
-        if is_plain:
-            out_blocks.append("#### " + " ".join(l.strip() for l in lines))
-        else:
-            out_blocks.append(block)
-    return "\n\n".join(out_blocks)
-
 # Раздел «Ключевые идеи»: маркеры вместо цифр, своя иконка
 KEY_IDEAS_RE = re.compile(r'ключев', re.IGNORECASE)
 SOURCES_RE = re.compile(r'источник', re.IGNORECASE)
@@ -102,15 +78,14 @@ def build_accordion_blocks(md_body: str) -> list:
             if content:
                 res.append(_preamble_transform(content))
         elif content:
-            # Заголовок плашки жирным, иначе он рендерится мельче основного текста
+            # Заголовок плашки — жирным и КАПСОМ: контраст с обычным текстом тела
+            # создаётся размером и регистром заголовка, а не увеличением тела.
             head_clean = escape_html(strip_markdown(head))
             if KEY_IDEAS_RE.search(head):
                 # Ключевые идеи: цифры → маркеры; свёрнуты, как и остальные плашки
                 content = re.sub(r'^(\s*)\d+[.)]\s+', r'\1- ', content, flags=re.MULTILINE)
-            else:
-                content = _paragraphs_to_h4(content)
             icon = _summary_icon(head_clean)
-            res.append(f"<details><summary><b>{icon}{head_clean}</b></summary>\n\n{content}\n\n</details>")
+            res.append(f"<details><summary><b>{icon}{head_clean.upper()}</b></summary>\n\n{content}\n\n</details>")
     return res
 
 def _preamble_transform(content: str) -> str:
