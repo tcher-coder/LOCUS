@@ -45,6 +45,44 @@ def _summary_icon(head_clean: str) -> str:
         return "🔗 "
     return ""
 
+# Абзац-«распорка» между соседними текстовыми абзацами внутри плашки: в rich-посте
+# Telegram обычная пустая строка между абзацами даёт лишь узкий просвет, а владельцу
+# нужна одна видимая пустая строка. U+2800 (braille blank) — не пробельный символ,
+# поэтому абзац из него не схлопывается и не обрезается как пустой (в отличие от nbsp).
+PARAGRAPH_SPACER = "⠀"
+
+def _is_plain_paragraph(block_lines: list) -> bool:
+    """Абзац обычного текста: без списка, цитаты, таблицы, заголовка, кода и HTML."""
+    return bool(block_lines) and all(
+        not re.match(r'^\s*([-*+>|#<]|\d+[.)]\s|```)', l) for l in block_lines
+    )
+
+def space_paragraphs(content: str) -> str:
+    """
+    Вставляет распорку между двумя подряд идущими обычными абзацами. Абзац перед
+    списком/кодом/таблицей и сами списки остаются плотными. Код-фенсы не режутся
+    по пустым строкам внутри.
+    """
+    blocks, cur, in_fence = [], [], False
+    for line in content.splitlines():
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+        if not in_fence and not line.strip():
+            if cur:
+                blocks.append(cur)
+                cur = []
+            continue
+        cur.append(line)
+    if cur:
+        blocks.append(cur)
+
+    out = []
+    for i, block in enumerate(blocks):
+        if i and _is_plain_paragraph(blocks[i - 1]) and _is_plain_paragraph(block):
+            out.append(PARAGRAPH_SPACER)
+        out.append("\n".join(block))
+    return "\n\n".join(out)
+
 def build_accordion_blocks(md_body: str) -> list:
     """
     Превращает Markdown-разделы в список блоков плоского аккордеона:
@@ -84,6 +122,7 @@ def build_accordion_blocks(md_body: str) -> list:
             if KEY_IDEAS_RE.search(head):
                 # Ключевые идеи: цифры → маркеры; свёрнуты, как и остальные плашки
                 content = re.sub(r'^(\s*)\d+[.)]\s+', r'\1- ', content, flags=re.MULTILINE)
+            content = space_paragraphs(content)
             icon = _summary_icon(head_clean)
             res.append(f"<details><summary><b>{icon}{head_clean.upper()}</b></summary>\n\n{content}\n\n</details>")
     return res
