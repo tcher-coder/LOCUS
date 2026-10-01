@@ -35,6 +35,7 @@ async def test_sdk():
     print("\nTesting Claude Agent SDK import and simple call...")
     try:
         from claude_agent_sdk import query, ClaudeAgentOptions
+        from agent import get_model
         print("[OK] claude-agent-sdk imported successfully.")
     except ImportError as e:
         print(f"[ERROR] Failed to import claude-agent-sdk: {e}")
@@ -50,11 +51,12 @@ async def test_sdk():
     # Try simple query
     try:
         options = ClaudeAgentOptions(
-            model="claude-sonnet-5",
+            model=get_model(),
             allowed_tools=["Read"],
             max_turns=2,
             effort="low"
         )
+        print(f"Model: {get_model()}")
         print("Sending simple 'respond OK' query to agent...")
         # Since query is an async generator, iterate over it
         async for msg in query(prompt="Respond with exactly 'OK' and nothing else.", options=options):

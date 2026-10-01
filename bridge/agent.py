@@ -14,6 +14,15 @@ from claude_agent_sdk.types import (
 
 logger = logging.getLogger("locus.agent")
 
+DEFAULT_MODEL = "claude-sonnet-5-5"
+
+
+def get_model() -> str:
+    """Модель агента: LOCUS_MODEL из окружения, иначе DEFAULT_MODEL.
+    Читается при каждом запуске, а не при импорте — .env к этому моменту уже загружен."""
+    return os.getenv("LOCUS_MODEL", "").strip() or DEFAULT_MODEL
+
+
 async def run_locus_agent(
     prompt: str,
     vault_path: str,
@@ -34,8 +43,9 @@ async def run_locus_agent(
         os.environ["GROQ_API_KEY"] = groq_api_key
 
     # Configure options
+    model = get_model()
     options = ClaudeAgentOptions(
-        model="claude-sonnet-5",
+        model=model,
         allowed_tools=["Read", "Write", "Edit", "Bash", "WebFetch", "WebSearch", "Glob", "Grep", "Skill"],
         permission_mode="bypassPermissions", # Run without manual confirmation prompts
         # ВАЖНО: без setting_sources SDK работает герметично и НЕ подхватывает
@@ -47,7 +57,7 @@ async def run_locus_agent(
         resume=resume_session_id
     )
 
-    logger.info(f"Starting agent session in {vault_path} with effort={effort}, resume={resume_session_id}")
+    logger.info(f"Starting agent session in {vault_path} with model={model}, effort={effort}, resume={resume_session_id}")
     yield {"type": "status", "status": "started"}
 
     full_response_text = ""

@@ -4,7 +4,7 @@
 
 ## Что это
 
-Telegram-бот → Claude Agent SDK (подписка, `claude-sonnet-5`) → конспект в `vault/raw/` + обновление LLM-вики (`vault/wiki/`) → ответ файлом в чат. Один контейнер, long polling, портов и ingress нет.
+Telegram-бот → Claude Agent SDK (подписка, модель по умолчанию `claude-sonnet-5-5`, см. «Модель агента») → конспект в `vault/raw/` + обновление LLM-вики (`vault/wiki/`) → ответ файлом в чат. Один контейнер, long polling, портов и ingress нет.
 
 ## Деплой / обновление
 
@@ -34,6 +34,19 @@ docker restart locus-bridge                # перезапуск (offset оче
 
 Агент падает на старте задачи → проверить `CLAUDE_CODE_OAUTH_TOKEN` (истекает через 1 год после `claude setup-token`; `/stats` в боте показывает срок) и что `ANTHROPIC_API_KEY` НЕ задан в окружении.
 
+## Модель агента
+
+По умолчанию — `claude-sonnet-5-5` (константа `DEFAULT_MODEL` в `bridge/agent.py`). Переопределяется переменной `LOCUS_MODEL` в `.env`, код трогать не нужно. Читается при каждом запуске задачи; активная модель пишется в лог (`Starting agent session … with model=…`).
+
+```bash
+echo 'LOCUS_MODEL=claude-sonnet-5-5' >> .env      # или другая модель; пусто/нет строки = DEFAULT_MODEL
+docker compose -f docker-compose.server.yml up -d  # пересоздаёт контейнер с новым env
+docker logs locus-bridge 2>&1 | grep "with model="
+```
+
+⚠️ `docker restart` НЕ перечитывает `.env`: переменные фиксируются при создании контейнера. После любой правки `.env` — `docker compose … up -d`.
+Опечатка в имени модели ломает все задачи агента (ошибка SDK вместо ответа) — после смены прогнать `python bridge/smoke.py` (он печатает `Model:` и берёт ту же настройку) либо отправить боту тестовую ссылку.
+
 ## Архивный канал
 
 Канал подключён (`ARCHIVE_CHANNEL_ID` в `.env`). Каждый успешный ingest автоматически постится в канал **rich-постом** (выжимка + хэштеги). Файлы в канал не отправляются: Bot API отдаёт `.md` с кривым MIME (расширения нет в таблице типов TDLib), и Telegram показывает их нечитаемо; сам файл живёт в vault (git) и доступен через `/get`.
@@ -41,7 +54,7 @@ docker restart locus-bridge                # перезапуск (offset оче
 Первичная настройка (если канал ещё не создан):
 1. Создать приватный канал, добавить бота админом с правами «Публикация сообщений» + «Изменение профиля канала».
 2. Узнать ID канала (`-100…`): переслать пост канала боту @userinfobot.
-3. В `.env`: `ARCHIVE_CHANNEL_ID=-100…` → `docker restart locus-bridge`.
+3. В `.env`: `ARCHIVE_CHANNEL_ID=-100…` → `docker compose -f docker-compose.server.yml up -d` (не `docker restart` — он не перечитывает `.env`).
 4. `/backfill` в боте — догрузит существующие конспекты.
 
 ## Данные
