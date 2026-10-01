@@ -5,7 +5,7 @@ import yaml
 import logging
 from datetime import datetime
 
-from telegram_out import send_markdown_text, build_post_parts
+from telegram_out import send_markdown_text, build_post_parts, send_document
 
 logger = logging.getLogger("locus.archive")
 
@@ -48,8 +48,9 @@ def build_channel_post(abs_path: str, gallery_captions: list = None) -> list:
     Готовит rich-пост(ы) для архивного канала из raw-конспекта: суть сверху,
     разделы аккордеоном (<details>). Длинный конспект делится на части «— Ч.N».
     Хэштеги не добавляются (решение владельца, 2026-07).
-    Файлы в канал не отправляются — .md от ботов Telegram открывает криво
-    (расширения .md нет в таблице MIME-типов Bot API).
+    Полный конспект (.md) прикладывается к посту отдельным сообщением в archive_post;
+    имейте в виду: .md от ботов Telegram в клиенте открывается криво (расширения .md
+    нет в таблице MIME-типов Bot API) — файл рассчитан на скачивание.
     gallery_captions — подписи кадров для свайп-галереи (первая часть поста);
     сама заливка/переиспользование фото — забота вызывающего кода.
     """
@@ -112,9 +113,16 @@ def archive_post(doc_rel_path: str, bot_token: str, channel_id: str, vault_dir: 
                 logger.error("Failed to post rich message to archive channel.")
                 return False
 
+        # Индекс пишем ДО файла: пост уже опубликован, и сбой файла не должен
+        # приводить к повторной публикации при /backfill.
         index = load_archive_index()
         index[filename] = {"posted_at": datetime.now().isoformat()}
         save_archive_index(index)
+
+        # Полный конспект — файлом сразу под постом (Bot API не умеет прикреплять
+        # файл к rich-сообщению, поэтому отдельным сообщением).
+        if not send_document(channel_id, bot_token, abs_path, caption=f"📄 {filename}"):
+            logger.warning(f"Не удалось приложить файл {filename} к посту в архивный канал.")
         return True
 
     except Exception as e:

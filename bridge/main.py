@@ -866,12 +866,14 @@ async def process_task(task: dict):
                                           gallery=gallery, out_file_ids=gallery_file_ids)
                     else:
                         send_markdown_text(chat_id, BOT_TOKEN, part, sent_ids=digest_msg_ids)
-            else:
-                # Фолбэк: если выжимку не удалось подготовить — отправляем файл
-                send_document(chat_id, BOT_TOKEN, doc_abs_path, caption=f"📄 {os.path.basename(result_val)}")
 
-            # 2. Архивный канал: rich-пост с выжимкой и хэштегами (файлы .md
-            #    боты Telegram отдают с кривым MIME — читать их в TG нельзя).
+            # 1а. Полный конспект файлом — всегда, сразу под выжимкой (а не только как фолбэк).
+            #     Лежит отдельным сообщением: Bot API не прикрепляет файл к rich-сообщению.
+            if not send_document(chat_id, BOT_TOKEN, doc_abs_path, caption=f"📄 {os.path.basename(result_val)}"):
+                logger.warning(f"Не удалось отправить файл конспекта в чат: {result_val}")
+
+            # 2. Архивный канал: rich-пост с выжимкой + полный конспект файлом под ним
+            #    (.md у ботов Telegram с кривым MIME — рассчитан на скачивание).
             #    Кадры галереи уже загружены выше — передаём file_id, чтобы не грузить их второй раз.
             if ARCHIVE_CHANNEL_ID:
                 try:
