@@ -15,17 +15,24 @@ RUN npm install -g @anthropic-ai/claude-code
 # Непривилегированный пользователь (Agent SDK запрещает --dangerously-skip-permissions под root)
 RUN groupadd -r locus && useradd -r -g locus -m -d /home/locus -s /bin/bash locus
 
-# Глобальный скилл /watch (bradautomates/claude-video) — ставим от locus
+# Глобальный скилл /watch (bradautomates/claude-video) — ставим от locus.
+# `skills add` интерактивный: без --agent и -y в сборке он молча ничего не ставит,
+# поэтому флаги обязательны, а отсутствие SKILL.md валит сборку (никаких `|| true`).
 USER locus
 ENV HOME=/home/locus
-RUN npx -y skills add bradautomates/claude-video -g \
-    && echo "--- installed skills ---" && ls -R /home/locus/.claude/skills 2>/dev/null || true
+RUN npx -y skills add bradautomates/claude-video -g --agent claude-code -y < /dev/null \
+    && test -f /home/locus/.claude/skills/watch/SKILL.md \
+    && echo "--- installed skills ---" && ls -R /home/locus/.claude/skills
 USER root
 
 WORKDIR /app
 COPY bridge/requirements.txt bridge/requirements.txt
 RUN python3 -m venv /opt/venv \
-    && pip install --no-cache-dir -r bridge/requirements.txt yt-dlp
+    && pip install --no-cache-dir -r bridge/requirements.txt "yt-dlp[default,curl-cffi]"
+
+# YouTube без JS-рантайма отдаёт урезанные форматы и чаще режет субтитры (HTTP 429);
+# node уже есть в образе (база node:22) — указываем его yt-dlp глобально.
+RUN printf -- '--js-runtimes node\n' > /etc/yt-dlp.conf
 
 COPY bridge/ bridge/
 COPY prompts/ prompts/
