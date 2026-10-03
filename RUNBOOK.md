@@ -47,6 +47,20 @@ docker logs locus-bridge 2>&1 | grep "with model="
 ⚠️ `docker restart` НЕ перечитывает `.env`: переменные фиксируются при создании контейнера. После любой правки `.env` — `docker compose … up -d`.
 Опечатка в имени модели ломает все задачи агента (ошибка SDK вместо ответа) — после смены прогнать `python bridge/smoke.py` (он печатает `Model:` и берёт ту же настройку) либо отправить боту тестовую ссылку.
 
+## Видео не обрабатывается
+
+Проверка, что скилл на месте и yt-dlp здоров (вывод без ошибок):
+
+```bash
+docker exec locus-bridge ls /home/locus/.claude/skills/watch      # должен быть SKILL.md
+docker exec locus-bridge cat /etc/yt-dlp.conf                     # --js-runtimes node
+docker exec -u locus locus-bridge yt-dlp --skip-download --print "%(id)s|%(title)s" <URL>   # без WARNING про JS-рантайм
+```
+
+- Агент в сессии пишет `Unknown skill: watch` → скилл не установился при сборке (Dockerfile валит сборку, если `SKILL.md` нет). Пересобрать: `docker compose -f docker-compose.server.yml build --no-cache && docker compose -f docker-compose.server.yml up -d`.
+- `HTTP 429` на субтитрах — YouTube режет запросы. Скилл берёт одну дорожку исходного языка, при ручном фолбэке агент ждёт и повторяет. Если бьёт стабильно — подождать и прислать ссылку позже.
+- Журнал сессий агента (что он реально делал: команды и ответы инструментов): `docker exec locus-bridge ls -t /home/locus/.claude/projects/-app-vault/` (файлы `.jsonl`). В `docker logs` этого нет.
+
 ## Архивный канал
 
 Канал подключён (`ARCHIVE_CHANNEL_ID` в `.env`). Каждый успешный ingest автоматически постится в канал **rich-постом** (выжимка + хэштеги). Файлы в канал не отправляются: Bot API отдаёт `.md` с кривым MIME (расширения нет в таблице типов TDLib), и Telegram показывает их нечитаемо; сам файл живёт в vault (git) и доступен через `/get`.
